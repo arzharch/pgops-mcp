@@ -39,6 +39,35 @@ root-equivalent on the host, so the default is read-only access.
 - Every executed statement lands in an append-only audit log with timing and verdict
 - Runaway-query cancellation with timeout tiers
 
+## MCP surface
+
+| Primitive | What's here |
+|---|---|
+| **Tools** | 13 — schema, query, explain, advise, migrate, environment |
+| **Resources** | `pgops://schema`, `schema/summary`, `schema/{table}`, `health`, `migrations`, `audit/recent`, `config` |
+| **Prompts** | `diagnose-slow-query`, `plan-safe-migration`, `incident-triage`, `review-index-health`, `explain-safety-model` |
+| **Elicitation** | Dangerous actions ask the **user** directly, not via the agent; confirmation tokens are the fallback |
+| **Progress / logging** | Best-effort notifications during long operations |
+
+## Remote access & agent tokens
+
+stdio needs no auth — the server is a subprocess your client spawns, with no open port.
+HTTP does, so it refuses to start without a key:
+
+```bash
+pgops-mcp keygen                                    # RS256 keypair
+pgops-mcp issue-token --subject my-agent            # read-only by default
+pgops-mcp issue-token --subject deploy-bot --scope pgops:read --scope pgops:write
+pgops-mcp scopes                                    # which scope each tool needs
+
+pgops-mcp --transport http --public-key ~/.pgops/keys/pgops_public.pem
+```
+
+The server holds only the **public** key, so it can verify tokens but never mint them.
+Scopes (`pgops:read` / `pgops:write` / `pgops:admin`) map to the same danger tiers as the
+guardrails, and a tool with no scope entry requires `admin` — deny by default. Binds
+loopback unless you say otherwise.
+
 ## Quickstart
 
 ```bash
@@ -73,9 +102,9 @@ Add to Claude Desktop:
 
 ## Status
 
-**Phases 0–5 complete** (268 tests, every guardrail, verdict and lock-impact rule proven
-against real Postgres via testcontainers — no mocks — plus an end-to-end suite that
-drives the server as a real MCP subprocess over stdio).
+**Phases 0–6b complete** (319 tests, every guardrail, verdict and lock-impact rule proven
+against real Postgres via testcontainers — no mocks — plus end-to-end suites driving the
+server as a real MCP subprocess over stdio and as an authenticated HTTP server).
 
 | Phase | State | Tools |
 |---|---|---|
@@ -85,7 +114,9 @@ drives the server as a real MCP subprocess over stdio).
 | 3 · Performance brain | ✅ | `query.explain` (plan verdicts), `index.advise` |
 | 4 · Migration engine | ✅ | `migration.plan` (lock analysis + dry run), `apply`, `history` |
 | 5 · Docker layer | ✅ | `env.topology`, `env.correlate`, `container.logs/stats/restart/exec` |
-| 6 · Packaging | next | PyPI, Smithery, MCP registry |
+| 6a · MCP completeness | ✅ | resources, prompts, elicitation, progress |
+| 6b · Remote + auth | ✅ | HTTP transport, JWT, scoped agent tokens, keygen CLI |
+| 6c · Packaging | next | PyPI, Smithery, MCP registry |
 
 `migration.rollback` is deliberately still open — see [`docs/TOOLS.md`](docs/TOOLS.md).
 

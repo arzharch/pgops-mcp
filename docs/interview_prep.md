@@ -40,6 +40,83 @@ by deny-by-default (unknown = dangerous) and table-driven tests covering CTE-wra
 writes and volatile functions. Dangerous-labeled-but-safe just costs a confirmation click,
 which is the right trade.
 
+## Section 0: MCP protocol depth (asked as "is this actually a complete MCP server?")
+
+**Q: MCP has tools, resources and prompts. Do you use all three?**
+A: Now, yes — and I didn't at first, which is worth admitting. Phases 1–5 shipped tools
+only, because tools are what the interesting work needed. The gap is real though:
+
+- A **tool** is model-controlled. The agent decides to call it, and each call costs a
+  turn and a round trip.
+- A **resource** is application-controlled. The client can attach it as context up front
+  without the model spending a turn deciding to fetch it.
+- A **prompt** is user-controlled — a slash command or menu entry.
+
+The clearest example: "what does my schema look like" is background context for nearly
+every database conversation. As a tool the model pays a turn for it every time. As
+`pgops://schema` a client attaches it once for the session. Same data, completely
+different economics.
+
+**Q: What do prompts give you that tools don't?**
+A: Ordering and judgment. Each tool does one thing, but knowing that a slow-query
+investigation goes `query.explain` → read the verdicts → `index.advise` → check
+`env.correlate` *before* blaming the query — that's operational knowledge no individual
+tool can express. Without prompts it lives only in whatever the user happens to type, and
+gets re-derived differently every session.
+
+They're also where I put the safety guidance that isn't enforceable in code: "check
+`stats_window` before recommending a DROP", "never call `migration.apply` before the user
+has seen the lock impact". There are tests asserting the prompts still contain that
+guidance, because a prompt that quietly loses it is just documentation.
+
+**Q: You mentioned elicitation. What problem does it actually solve?**
+A: The most interesting security question in the project, and it exposed a real weakness
+in my own design.
+
+The confirmation-token protocol routes human approval **through the agent**. The server
+refuses, hands back a token plus a reason, and trusts the model to relay that reason
+faithfully to a human and only come back once a human said yes. *Nothing enforced the
+middle step.* A model that's confused, over-eager, or adversarially prompted can just
+call again with the token it was handed a moment ago.
+
+Elicitation is a server→client request that asks the **user** directly, outside the
+model's turn. The model can't fabricate the answer because the model isn't in that path.
+
+The policy is the part I'd want to be asked about:
+
+```
+elicitation supported   -> ask the human directly
+elicitation unavailable -> fall back to the token protocol
+                        -> NEVER fall back to "allowed"
+```
+
+Losing elicitation degrades approval from "the human was asked" to "the agent asserts the
+human was asked" — weaker, but still gated. And a human "no" raises
+`CONFIRMATION_DECLINED` and issues **no token**: an explicit refusal must not be
+convertible into a credential the agent redeems seconds later. The audit log records
+which method approved each action, because those are different assurances.
+
+**Q: Any bug come out of that work?**
+A: A deprecation warning that turned out to be a real client bug. Calling `ctx.elicit()`
+without a `response_type` produces an empty schema, and the warning said it "causes some
+clients (e.g. VS Code) to render an empty, non-functional form". VS Code is a target
+client in my PRD — so users would have been asked to approve a destructive action with no
+way to answer. Fixed by sending an explicit `["approve", "cancel"]` choice.
+
+I also handled a subtlety I nearly missed: the client can *accept the prompt* while the
+user picks "cancel". Treating the envelope as the answer would have approved every action
+the user actively declined.
+
+**Q: What about sampling?**
+A: Not used yet, and I'd rather say that than claim it. Worth being precise about what it
+does, because it's commonly described backwards: sampling lets the **server** request an
+LLM completion **from the client's** model. So the server never needs its own API key —
+it borrows the caller's.
+
+Real candidates here: summarising an EXPLAIN plan in prose, or turning "add a nullable
+note column to orders" into a `migration.plan` target. Both are on the roadmap in
+flow.md rather than half-built.
+
 **Q: Why stdio and not HTTP?**
 A: Target users run Claude Desktop/Cursor locally against local Postgres — stdio is
 native, zero network attack surface, no auth problem to solve badly. The tool layer is
@@ -59,6 +136,82 @@ package lives at `src/pgops`. Fixed with `[tool.uv.build-backend] module-name = 
 in `pyproject.toml`. Neither of these is exotic — they're exactly the kind of thing that
 never shows up in a tutorial's "happy path" and immediately shows up on someone else's
 machine.
+
+## Section 1b: Auth and remote access
+
+**Q: Your server has no authentication. Isn't that a problem?**
+A: Over stdio, no — and I'd push back on the premise. The server is a subprocess the
+user's own MCP client spawns. It inherits their privileges, listens on no port, and has
+no remote caller to authenticate. The DSN comes from the client's config. Adding a token
+there would be theatre: whoever can start the process already has everything the token
+would protect.
+
+That reasoning collapses the instant it listens on a port, so auth is bound to the
+**transport** rather than being a global flag. `--transport http` refuses to start
+without `--public-key`:
+
+```
+pgops-mcp: --transport http requires --public-key.
+  generate one with:  pgops-mcp keygen
+  refusing to expose database tools on a network port without auth.
+```
+
+Failing to start is deliberate. A default-insecure HTTP mode is the kind of thing that
+ends up on a shared network "just for testing".
+
+**Q: Walk me through issuing a credential for an agent.**
+A: Three commands, all in the same binary:
+
+```bash
+pgops-mcp keygen                                     # RS256 keypair
+pgops-mcp issue-token --subject deploy-bot --scope pgops:read --scope pgops:write
+pgops-mcp --transport http --public-key ~/.pgops/keys/pgops_public.pem
+```
+
+Two design decisions worth defending:
+
+**Asymmetric, not a shared secret.** The server holds only the public key. A server
+compromise leaks the ability to *verify* tokens, never to *issue* them — the attacker
+can't mint themselves an admin credential from what's on the box.
+
+**Read-only by default.** `issue-token` with no `--scope` produces a token that cannot
+write. An agent whose job is answering questions about a schema should not hold a
+credential capable of dropping it, and the safe default should be the lazy one.
+
+**Q: How do the scopes map?**
+A: To the same danger tiers the guardrails already use, so the split is meaningful rather
+than decorative:
+
+| Scope | Tools |
+|---|---|
+| `pgops:read` | schema.inspect, query.read, query.explain, db.health, index.advise, **migration.plan**, migration.history, env.*, container.logs/stats |
+| `pgops:write` | query.write, **migration.apply** |
+| `pgops:admin` | container.restart, container.exec |
+
+`migration.plan` sits on the read side because it executes nothing — its dry run happens
+inside a transaction that's always rolled back. `migration.apply` doesn't, so it doesn't.
+
+And a tool with no scope entry requires `admin` — deny-by-default, the same principle as
+the SQL classifier (ADR-001). A tool added later without a scope mapping is locked down
+rather than silently public, which is the failure direction that actually matters.
+
+There's a test asserting no mutating tool appears under `pgops:read`, because the scope
+split is only worth anything if a read token genuinely cannot mutate.
+
+**Q: What's still missing for a real multi-tenant deployment?**
+A: Two things, and I'd rather name them than let someone find them.
+
+**Per-session DSN isolation.** Auth identifies the caller, but every authenticated caller
+currently shares one `ConnectionManager` and one audit log. That's correct for stdio —
+one user, one database — and insufficient for genuine multi-tenancy. Scoped tokens limit
+*what* a caller can do, not *which database* they reach.
+
+**The audit log doesn't record the token subject yet.** The identity is in the JWT and
+that's the whole reason `subject` is there, but I haven't threaded it into `AuditEntry`.
+So on HTTP the log currently answers "what happened" but not "who did it". For stdio
+that's fine because there's exactly one caller; for HTTP it's the gap I'd close first.
+
+Both are in flow.md under "next up" rather than quietly omitted.
 
 ## Section 2: Phase 1 — Connection core & read path
 

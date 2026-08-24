@@ -5,6 +5,94 @@
 
 ---
 
+## 2026-08-25 · Phase 6a — MCP protocol completeness
+
+Audit prompted by a direct question: the server had shipped **tools only**, which is one
+of three server primitives. Everything below closes that gap.
+
+- **PHASE-6a · resources.** Tools are model-controlled and cost a turn; resources are
+  *application*-controlled and can be attached as context by the client without the
+  model deciding to spend one. "What does my schema look like" is background context for
+  almost every database conversation, so it belongs in a resource. Added
+  `pgops://schema`, `pgops://schema/summary`, `pgops://schema/{table}` (template),
+  `pgops://health`, `pgops://migrations`, `pgops://audit/recent`, `pgops://config`.
+  All read-only and mirroring existing tools, so no new capability and no new attack
+  surface.
+- **PHASE-6a · two resources needed deliberate redaction.** `pgops://config` omits the
+  DSN (it contains the password). `pgops://audit/recent` returns verdicts, timings and
+  SQL *hashes* but **not statement text** — the on-disk log keeps full SQL because an
+  incident review needs it, but a resource may be auto-attached to model context, and
+  executed SQL embeds literal values (an email in a WHERE clause, an amount in an
+  UPDATE). Tested.
+- **PHASE-6a · prompts.** Five workflows (`diagnose-slow-query`, `plan-safe-migration`,
+  `incident-triage`, `review-index-health`, `explain-safety-model`). Prompts are the
+  right home for the thing no individual tool can express: *the order to use the tools
+  in and what to do with the answers*. Without them that judgment lives only in whatever
+  the user types and gets re-derived, differently, every session. Each one steers toward
+  the safe path (check `stats_window` before recommending a DROP; never call
+  `migration.apply` before the user has seen the lock impact).
+- **PHASE-6a · elicitation — the most significant gap.** The confirmation-token protocol
+  has a structural weakness: approval round-trips **through the agent**. The server
+  hands back a token and trusts the model to relay the reason honestly and only return
+  once a human agreed. Nothing enforced the middle step. Elicitation asks the *user*
+  directly, outside the model's turn, so the model cannot fabricate the answer.
+  - Policy: elicit when the client supports it, fall back to tokens when it does not —
+    and **never** fall back to "allowed". Losing elicitation degrades approval from
+    "the human was asked" to "the agent asserts the human was asked".
+  - A human "no" raises `CONFIRMATION_DECLINED` and issues **no token**: an explicit
+    refusal must not be convertible into a credential the agent redeems seconds later.
+  - The audit log records *which* method approved each action, because "the human was
+    asked" and "the agent presented a token" are different assurances.
+- **PHASE-6a · a deprecation warning that was a real client bug.** `ctx.elicit()`
+  without a `response_type` produces an empty schema that "causes some clients (e.g.
+  VS Code) to render an empty, non-functional form" — the user is asked to approve
+  something with no way to answer. VS Code is a target client per the PRD. Fixed by
+  sending an explicit `["approve", "cancel"]` choice. Also handled the case where the
+  client accepts the *prompt* but the user picks "cancel" — treating the envelope as the
+  answer would approve everything actively declined.
+- **PHASE-6a · progress and client logging** helpers, both best-effort: telemetry must
+  never break the operation it describes.
+
+## 2026-08-25 · Phase 6b — HTTP transport and agent auth
+
+- **PHASE-6b:** Auth is bound to the **transport**, not offered as a global flag. Over
+  stdio there is no remote caller to authenticate and requiring a token would be theatre
+  (ADR-002 — this is why Phases 1–5 shipped with none). Over HTTP the port is reachable,
+  so `--transport http` **refuses to start without `--public-key`**.
+- **PHASE-6b:** RS256, not a shared secret. The server holds only the public key, so a
+  server compromise leaks the ability to *verify* tokens, never to *issue* them.
+- **PHASE-6b:** Scopes map to the danger tiers the project already uses —
+  `pgops:read` / `pgops:write` / `pgops:admin` — so a token can be genuinely incapable
+  of the thing you are worried about. New tokens default to **read-only**. Tools with no
+  scope entry require `admin`: deny-by-default, same principle as the SQL classifier.
+  `migration.plan` is read (its dry run is rolled back); `migration.apply` is write.
+- **PHASE-6b:** `subject` lands in the token and identifies the agent. With stdio there
+  is one caller and identity is implicit; an HTTP server has many, and "who ran this
+  DELETE" has to be answerable.
+- **PHASE-6b:** HTTP binds `127.0.0.1` by default — `0.0.0.0` would expose a database
+  operator to the whole network the moment someone tried HTTP mode.
+- **PHASE-6b:** Key management ships in the same binary: `pgops-mcp keygen`,
+  `pgops-mcp issue-token --subject <agent> --scope <scope>`, `pgops-mcp scopes`.
+
+### Gate evidence
+
+```
+uv run pytest -q      # 319 passed
+uv run ruff check .   # All checks passed!
+uv run mypy src       # Success: no issues found in 28 source files
+```
+
+Live HTTP server with auth, against the 1.2M-row dev database:
+
+```
+=== no token ===     rejected: 401 Unauthorized
+=== bad token ===    rejected: 401 Unauthorized
+=== valid token ===  authenticated, tools: 13
+                     query.read over HTTP -> [{'n': 1200000}]
+```
+
+---
+
 ## 2026-08-24 · Phase 5 — Docker environment layer
 
 Two concerns drove this phase, neither of them about Docker features.
@@ -494,8 +582,21 @@ uv run pytest -q      # 1 passed
 
 ## Next up
 
-- [ ] Phase 6: packaging & distribution — PyPI, Smithery manifest, official MCP registry,
+- [ ] Phase 6c: packaging & distribution — PyPI, Smithery manifest, official MCP registry,
       README quickstart verified on a clean machine, demo recording
+- [ ] **Per-session DSN isolation for HTTP.** Auth identifies the caller, but every
+      authenticated caller currently shares one `ConnectionManager` and one audit log.
+      That is correct for stdio (one user, one database) and insufficient for a
+      genuinely multi-tenant deployment. Scoped tokens limit *what* a caller can do,
+      not *which database* they reach.
+- [ ] **Audit log should record the token subject.** The identity exists in the JWT but
+      is not yet threaded into `AuditEntry`, so on HTTP the log answers "what happened"
+      but not "who did it" — the whole reason `subject` is in the token.
+- [ ] **Sampling** (`ctx.sample`) — unused so far. Real candidates: summarising an
+      EXPLAIN plan in prose, or turning a natural-language request into a
+      `migration.plan` target, both without pgops needing its own model or API key.
+- [ ] **Completions** — argument autocomplete for table names would remove a whole class
+      of "table not found" round trips.
 - [ ] `migration.rollback` — the ledger stores the applied steps, but generated
       down-migrations are not implemented yet. Deliberately deferred rather than
       half-built: a rollback that silently loses data is worse than none, so it needs
