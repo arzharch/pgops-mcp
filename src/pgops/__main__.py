@@ -20,6 +20,7 @@ from pgops.auth import (
     issue_token,
     load_public_key,
 )
+from pgops.completions import register_completions
 from pgops.config import PgopsConfig
 from pgops.connections import ConnectionManager
 from pgops.errors import PgopsError, tool_boundary
@@ -397,6 +398,10 @@ def build_server(config: PgopsConfig, conn_manager: ConnectionManager, auth: Any
     def explain_safety_model_prompt() -> str:
         """Explain what this server will and will not permit, and why."""
         return explain_safety_model()
+
+    # Autocomplete for the {table} argument of pgops://schema/{table}, so a client can
+    # offer a picker instead of the user having to know the name first.
+    register_completions(mcp, conn_manager)
 
     @mcp.tool(name="db.health")
     @tool_boundary
