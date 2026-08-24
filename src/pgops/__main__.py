@@ -12,6 +12,14 @@ from typing import Any
 from fastmcp import Context, FastMCP
 
 from pgops.audit import AuditLog
+from pgops.auth import (
+    Scope,
+    build_verifier,
+    describe_scopes,
+    generate_keypair,
+    issue_token,
+    load_public_key,
+)
 from pgops.config import PgopsConfig
 from pgops.connections import ConnectionManager
 from pgops.errors import PgopsError, tool_boundary
@@ -67,8 +75,10 @@ def configure_logging(level: int = logging.INFO) -> None:
     root.propagate = False
 
 
-def build_server(config: PgopsConfig, conn_manager: ConnectionManager) -> FastMCP:
-    mcp: FastMCP = FastMCP("pgops-mcp")
+def build_server(
+    config: PgopsConfig, conn_manager: ConnectionManager, auth: Any = None
+) -> FastMCP:
+    mcp: FastMCP = FastMCP("pgops-mcp", auth=auth)
     audit = AuditLog(config.audit_path)
     tokens = ConfirmationTokenStore(ttl_s=config.confirm_token_ttl_s)
 
@@ -365,6 +375,41 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="permit container mutations (restart/exec); off by default because Docker "
         "socket access is equivalent to root on the host",
     )
+    parser.add_argument(
+        "--transport",
+        choices=["stdio", "http"],
+        default="stdio",
+        help="stdio (default, local, no auth needed) or http (remote, requires --public-key)",
+    )
+    parser.add_argument("--host", default="127.0.0.1", help="HTTP bind host")
+    parser.add_argument("--port", type=int, default=8000, help="HTTP bind port")
+    parser.add_argument(
+        "--public-key", default=None, help="PEM public key used to verify agent tokens (HTTP)"
+    )
+
+    # Key management lives in the same binary so the whole workflow is one install.
+    sub = parser.add_subparsers(dest="command")
+
+    keygen = sub.add_parser("keygen", help="generate the RSA keypair for agent tokens")
+    keygen.add_argument(
+        "--key-dir", default="~/.pgops/keys", help="where to write the keypair"
+    )
+
+    token = sub.add_parser("issue-token", help="mint a bearer token for an agent")
+    token.add_argument("--subject", required=True, help="agent identity, recorded in the audit log")
+    token.add_argument(
+        "--key", default="~/.pgops/keys/pgops_private.pem", help="private key to sign with"
+    )
+    token.add_argument(
+        "--scope",
+        action="append",
+        choices=[s.value for s in Scope],
+        help="repeatable; defaults to pgops:read only",
+    )
+    token.add_argument("--expires-in", type=int, default=30, help="lifetime in days")
+
+    sub.add_parser("scopes", help="show which scope each tool requires")
+
     return parser.parse_args(argv)
 
 
@@ -382,8 +427,63 @@ async def _selfcheck(config: PgopsConfig) -> None:
         await conn_manager.stop()
 
 
+def _run_keygen(args: argparse.Namespace) -> None:
+    """Generate the RSA keypair used to sign and verify agent tokens."""
+    directory = Path(args.key_dir).expanduser()
+    material = generate_keypair()
+    private_path, public_path = material.save(directory)
+    print(f"private key (keep secret, used only to issue tokens): {private_path}")
+    print(f"public key  (give to the server to verify tokens):    {public_path}")
+    print()
+    print("Issue a token for an agent:")
+    print(f"  pgops-mcp issue-token --subject my-agent --key {private_path}")
+    print()
+    print("Run the server with HTTP transport:")
+    print(f"  pgops-mcp --transport http --public-key {public_path}")
+
+
+def _run_issue_token(args: argparse.Namespace) -> None:
+    key_path = Path(args.key).expanduser()
+    try:
+        private_key = key_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        print(f"pgops-mcp: cannot read private key {key_path}: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
+
+    try:
+        token = issue_token(
+            private_key,
+            subject=args.subject,
+            scopes=args.scope or None,
+            expires_in_seconds=args.expires_in * 86400,
+        )
+    except PgopsError as exc:
+        print(f"pgops-mcp: {exc.message}", file=sys.stderr)
+        raise SystemExit(1) from exc
+
+    scopes = args.scope or [Scope.READ.value]
+    print(token)
+    print(file=sys.stderr)
+    print(f"subject: {args.subject}", file=sys.stderr)
+    print(f"scopes:  {scopes}", file=sys.stderr)
+    print(f"expires: {args.expires_in} days", file=sys.stderr)
+    if Scope.READ.value in scopes and len(scopes) == 1:
+        print("this token cannot write or modify containers", file=sys.stderr)
+
+
 def main() -> None:
     args = parse_args()
+
+    if args.command == "keygen":
+        _run_keygen(args)
+        return
+    if args.command == "issue-token":
+        _run_issue_token(args)
+        return
+    if args.command == "scopes":
+        print(describe_scopes())
+        return
+
     configure_logging(logging.DEBUG if args.verbose else logging.INFO)
     try:
         config = PgopsConfig.from_env(
@@ -400,13 +500,34 @@ def main() -> None:
         asyncio.run(_selfcheck(config))
         return
 
+    # Auth is bound to the transport, not offered as a global flag. Over stdio there is
+    # no remote caller to authenticate and requiring a token would be theatre; over HTTP
+    # the port is reachable and running without auth would expose a database operator to
+    # anyone who can route to it. So HTTP refuses to start without a key.
+    auth = None
+    if args.transport == "http":
+        if not args.public_key:
+            print(
+                "pgops-mcp: --transport http requires --public-key.\n"
+                "  generate one with:  pgops-mcp keygen\n"
+                "  refusing to expose database tools on a network port without auth.",
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
+        auth = build_verifier(load_public_key(Path(args.public_key).expanduser()))
+
     conn_manager = ConnectionManager(config)
 
     async def _run() -> None:
         await conn_manager.start()
         try:
-            mcp = build_server(config, conn_manager)
-            await mcp.run_async(transport="stdio")
+            mcp = build_server(config, conn_manager, auth=auth)
+            if args.transport == "http":
+                logger = logging.getLogger("pgops")
+                logger.info("serving MCP over HTTP on %s:%s", args.host, args.port)
+                await mcp.run_async(transport="http", host=args.host, port=args.port)
+            else:
+                await mcp.run_async(transport="stdio")
         finally:
             await conn_manager.stop()
 
