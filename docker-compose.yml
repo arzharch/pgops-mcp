@@ -1,9 +1,15 @@
 # Dev environment: real Postgres with pg_stat_statements + seeded demo schema.
 # Used by manual testing and as the demo target. Tests use testcontainers instead.
+#
+# Port: host 5433, not 5432 — this dev box already runs other Postgres instances
+# (native service + other project containers) bound to 5432/5434. Mapping to a
+# non-default host port and keeping it out of PGOPS_DSN defaults is itself a small
+# "works in a real, already-occupied environment" detail worth remembering.
 
 services:
   postgres:
     image: postgres:16
+    container_name: pgops_dev_postgres
     environment:
       POSTGRES_USER: pgops
       POSTGRES_PASSWORD: pgops_dev
@@ -15,7 +21,11 @@ services:
       - -c
       - pg_stat_statements.track=all
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - ./dev/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
-      # NOTE: seed data (large tables for lock/explain scenarios) is added in Phase 0.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pgops -d pgops_demo"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
