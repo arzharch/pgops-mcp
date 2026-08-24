@@ -1,0 +1,109 @@
+"""Server configuration: DSNs, timeout tiers, pool sizing, safety flags.
+
+Every value has a PGOPS_* env var and, in __main__.py, a CLI override — env vars are
+what a Claude Desktop / Cursor mcpServers.json entry sets; CLI flags are for manual
+`uv run pgops-mcp ...` usage. CLI wins when both are given.
+"""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass, field
+
+from pgops.errors import ErrorCode, PgopsError
+
+
+def _int_env(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        raise PgopsError(
+            ErrorCode.INVALID_ARGUMENT,
+            f"{name}={raw!r} is not a valid integer",
+        ) from None
+
+
+def _bool_env(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+@dataclass(slots=True)
+class TimeoutTiers:
+    """statement_timeout in ms. `default` applies unless a tool asks for a higher
+    tier explicitly; `max` is a hard ceiling no tool call — however configured — can
+    exceed. Keeps one runaway EXPLAIN ANALYZE from parking a pool connection forever."""
+
+    default_ms: int = field(default_factory=lambda: _int_env("PGOPS_DEFAULT_TIMEOUT_MS", 5_000))
+    max_ms: int = field(default_factory=lambda: _int_env("PGOPS_MAX_TIMEOUT_MS", 30_000))
+
+    def resolve(self, requested_ms: int | None) -> int:
+        if requested_ms is None:
+            return self.default_ms
+        if requested_ms <= 0:
+            raise PgopsError(
+                ErrorCode.INVALID_ARGUMENT,
+                "timeout_ms must be positive",
+            )
+        return min(requested_ms, self.max_ms)
+
+
+@dataclass(slots=True)
+class RowLimits:
+    default: int = field(default_factory=lambda: _int_env("PGOPS_DEFAULT_ROW_LIMIT", 100))
+    max: int = field(default_factory=lambda: _int_env("PGOPS_MAX_ROW_LIMIT", 10_000))
+
+    def resolve(self, requested: int | None) -> int:
+        if requested is None:
+            return self.default
+        if requested <= 0:
+            raise PgopsError(ErrorCode.INVALID_ARGUMENT, "limit must be positive")
+        if requested > self.max:
+            raise PgopsError(
+                ErrorCode.ROW_LIMIT_EXCEEDED,
+                f"requested limit {requested} exceeds server max {self.max}",
+                hint=f"lower limit to <= {self.max}",
+            )
+        return requested
+
+
+@dataclass(slots=True)
+class PoolSizing:
+    # Local, single-agent usage rarely needs more than a handful of connections;
+    # keep both pools small by default and let production deployments raise them
+    # relative to Postgres max_connections and expected concurrent MCP clients.
+    readonly_min: int = field(default_factory=lambda: _int_env("PGOPS_READONLY_POOL_MIN", 1))
+    readonly_max: int = field(default_factory=lambda: _int_env("PGOPS_READONLY_POOL_MAX", 5))
+    readwrite_max: int = field(default_factory=lambda: _int_env("PGOPS_READWRITE_POOL_MAX", 2))
+
+
+@dataclass(slots=True)
+class PgopsConfig:
+    dsn: str
+    readonly_dsn: str | None = None
+    read_only: bool = False
+    approval_mode: bool = False
+    timeouts: TimeoutTiers = field(default_factory=TimeoutTiers)
+    row_limits: RowLimits = field(default_factory=RowLimits)
+    pools: PoolSizing = field(default_factory=PoolSizing)
+
+    @classmethod
+    def from_env(cls, *, dsn: str | None = None, read_only: bool | None = None) -> PgopsConfig:
+        resolved_dsn = dsn or os.environ.get("PGOPS_DSN")
+        if not resolved_dsn:
+            raise PgopsError(
+                ErrorCode.DSN_MISSING,
+                "no Postgres DSN provided",
+                hint="set PGOPS_DSN or pass --dsn",
+            )
+        return cls(
+            dsn=resolved_dsn,
+            readonly_dsn=os.environ.get("PGOPS_READONLY_DSN"),
+            read_only=read_only if read_only is not None else _bool_env("PGOPS_READ_ONLY", False),
+            approval_mode=_bool_env("PGOPS_APPROVAL_MODE", False),
+        )

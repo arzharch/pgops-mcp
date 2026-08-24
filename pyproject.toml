@@ -7,7 +7,9 @@ requires-python = ">=3.12"
 license = { text = "MIT" }
 authors = [{ name = "Arsh Zakee Chowhan" }]
 dependencies = [
-    # Phase 1 adds: fastmcp, asyncpg
+    "fastmcp>=2.3",
+    "asyncpg>=0.29",
+    "sqlparse>=0.5",
     # Phase 5 adds: docker
 ]
 
@@ -28,6 +30,9 @@ dev = [
 requires = ["uv_build>=0.7,<1.0"]
 build-backend = "uv_build"
 
+[tool.uv.build-backend]
+module-name = "pgops"
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
@@ -38,3 +43,11 @@ target-version = "py312"
 
 [tool.mypy]
 strict = true
+
+[[tool.mypy.overrides]]
+module = "asyncpg.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "sqlparse.*"
+ignore_missing_imports = true
