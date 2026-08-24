@@ -1,0 +1,21 @@
+# Dev environment: real Postgres with pg_stat_statements + seeded demo schema.
+# Used by manual testing and as the demo target. Tests use testcontainers instead.
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: pgops
+      POSTGRES_PASSWORD: pgops_dev
+      POSTGRES_DB: pgops_demo
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=pg_stat_statements
+      - -c
+      - pg_stat_statements.track=all
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./dev/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      # NOTE: seed data (large tables for lock/explain scenarios) is added in Phase 0.

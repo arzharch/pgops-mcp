@@ -1,0 +1,40 @@
+[project]
+name = "pgops-mcp"
+version = "0.1.0"
+description = "Production-grade MCP server: safe, audited PostgreSQL operations + Docker environment awareness for AI agents."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "Arsh Zakee Chowhan" }]
+dependencies = [
+    # Phase 1 adds: fastmcp, asyncpg
+    # Phase 5 adds: docker
+]
+
+[project.scripts]
+pgops-mcp = "pgops.__main__:main"
+
+[project.optional-dependencies]
+otel = ["opentelemetry-sdk>=1.25"]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "testcontainers[postgres]>=4.0",
+    "ruff>=0.5",
+    "mypy>=1.10",
+]
+
+[build-system]
+requires = ["uv_build>=0.7,<1.0"]
+build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.mypy]
+strict = true
