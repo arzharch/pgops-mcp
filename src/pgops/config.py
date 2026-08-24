@@ -80,6 +80,13 @@ class PoolSizing:
     readonly_min: int = field(default_factory=lambda: _int_env("PGOPS_READONLY_POOL_MIN", 1))
     readonly_max: int = field(default_factory=lambda: _int_env("PGOPS_READONLY_POOL_MAX", 5))
     readwrite_max: int = field(default_factory=lambda: _int_env("PGOPS_READWRITE_POOL_MAX", 2))
+    # Ceiling on how long a tool call waits for a free pooled connection. Without it,
+    # asyncpg's acquire() waits forever: if every connection is held by slow queries,
+    # new tool calls hang with no error and no timeout — the agent just stops getting
+    # responses, which is far worse to debug than a clear "pool exhausted".
+    acquire_timeout_s: float = field(
+        default_factory=lambda: _int_env("PGOPS_POOL_ACQUIRE_TIMEOUT_MS", 10_000) / 1000
+    )
 
 
 @dataclass(slots=True)

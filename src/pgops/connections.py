@@ -29,10 +29,17 @@ next caller that happens to reuse the same pooled connection.
 
 from __future__ import annotations
 
+import asyncio
+import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 import asyncpg
 
 from pgops.config import PgopsConfig
 from pgops.errors import ErrorCode, PgopsError
+
+logger = logging.getLogger("pgops.connections")
 
 
 async def _init_readonly_connection(conn: asyncpg.Connection) -> None:
@@ -76,6 +83,30 @@ class ConnectionManager:
                 "readonly pool used before start()",
             )
         return self._readonly_pool
+
+    @asynccontextmanager
+    async def acquire_readonly(self) -> AsyncIterator[asyncpg.Connection]:
+        """Acquire a readonly connection with a bounded wait.
+
+        Every tool goes through here rather than calling `pool.acquire()` directly, so
+        pool exhaustion surfaces as a structured POOL_EXHAUSTED error instead of an
+        indefinite hang.
+        """
+        timeout = self._config.pools.acquire_timeout_s
+        try:
+            conn = await asyncio.wait_for(self.readonly_pool.acquire(), timeout=timeout)
+        except TimeoutError as exc:
+            logger.warning("readonly pool exhausted after %.1fs wait", timeout)
+            raise PgopsError(
+                ErrorCode.POOL_EXHAUSTED,
+                f"no readonly connection available within {timeout:.1f}s",
+                hint="a previous query may still be running; retry, or raise "
+                "PGOPS_READONLY_POOL_MAX",
+            ) from exc
+        try:
+            yield conn
+        finally:
+            await self.readonly_pool.release(conn)
 
     async def readwrite_pool(self) -> asyncpg.Pool:
         if self._config.read_only:
