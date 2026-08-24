@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 import sys
 from typing import Any
 
@@ -11,44 +12,61 @@ from fastmcp import FastMCP
 
 from pgops.config import PgopsConfig
 from pgops.connections import ConnectionManager
-from pgops.errors import PgopsError
+from pgops.errors import PgopsError, tool_boundary
 from pgops.tools.health import db_health
 from pgops.tools.query import query_read
 from pgops.tools.schema import Level, schema_inspect
 
 
+def configure_logging(level: int = logging.INFO) -> None:
+    """All logs go to stderr — never stdout.
+
+    Under stdio transport, stdout IS the MCP protocol channel: the client parses it as
+    a stream of JSON-RPC messages. A single stray log line (or `print()`) written there
+    corrupts the stream and breaks the session in a way that looks like a client bug.
+    logging.StreamHandler defaults to stderr, but it is set explicitly here because the
+    consequence of getting it wrong is silent and confusing.
+    """
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    root = logging.getLogger("pgops")
+    root.handlers.clear()
+    root.addHandler(handler)
+    root.setLevel(level)
+    root.propagate = False
+
+
 def build_server(config: PgopsConfig, conn_manager: ConnectionManager) -> FastMCP:
     mcp: FastMCP = FastMCP("pgops-mcp")
 
-    @mcp.tool()
-    async def schema_inspect_tool(level: Level = "summary", table: str | None = None) -> dict[str, Any]:
+    # Tool names match docs/TOOLS.md exactly. FastMCP would otherwise derive the name
+    # from the Python function, which is a private implementation detail — the tool
+    # name is a public contract that agents and docs both depend on.
+    @mcp.tool(name="schema.inspect")
+    @tool_boundary
+    async def schema_inspect_tool(
+        level: Level = "summary", table: str | None = None
+    ) -> dict[str, Any]:
         """Inspect database structure: tables, columns, indexes, constraints, sizes."""
-        try:
-            snapshot = await schema_inspect(conn_manager, level=level, table=table)
-            return snapshot.to_dict(level)
-        except PgopsError as exc:
-            return exc.to_dict()
+        snapshot = await schema_inspect(conn_manager, level=level, table=table)
+        return snapshot.to_dict(level)
 
-    @mcp.tool()
+    @mcp.tool(name="query.read")
+    @tool_boundary
     async def query_read_tool(
         sql: str, limit: int | None = None, timeout_ms: int | None = None
     ) -> dict[str, Any]:
         """Execute a read-only statement (SELECT/WITH/EXPLAIN only)."""
-        try:
-            result = await query_read(conn_manager, config, sql, limit=limit, timeout_ms=timeout_ms)
-            return result.to_dict()
-        except PgopsError as exc:
-            return exc.to_dict()
+        result = await query_read(conn_manager, config, sql, limit=limit, timeout_ms=timeout_ms)
+        return result.to_dict()
 
-    @mcp.tool()
+    @mcp.tool(name="db.health")
+    @tool_boundary
     async def db_health_tool() -> dict[str, Any]:
         """Health snapshot: connections, cache hit ratio, dead tuples, long-running
         queries, waiting locks — each finding with a severity and explanation."""
-        try:
-            report = await db_health(conn_manager)
-            return report.to_dict()
-        except PgopsError as exc:
-            return exc.to_dict()
+        report = await db_health(conn_manager)
+        return report.to_dict()
 
     return mcp
 
@@ -62,6 +80,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="connect, introspect, print a summary, then exit (no MCP transport)",
     )
+    parser.add_argument("--verbose", action="store_true", help="debug-level logging on stderr")
     return parser.parse_args(argv)
 
 
@@ -81,6 +100,7 @@ async def _selfcheck(config: PgopsConfig) -> None:
 
 def main() -> None:
     args = parse_args()
+    configure_logging(logging.DEBUG if args.verbose else logging.INFO)
     try:
         config = PgopsConfig.from_env(dsn=args.dsn, read_only=args.read_only)
     except PgopsError as exc:
