@@ -19,6 +19,7 @@ from pgops.guardrails import ConfirmationTokenStore
 from pgops.tools.advisor import index_advise
 from pgops.tools.explain import query_explain
 from pgops.tools.health import db_health
+from pgops.tools.migrations import migration_apply, migration_history, migration_plan
 from pgops.tools.query import query_read
 from pgops.tools.schema import Level, schema_inspect
 from pgops.tools.write import query_write
@@ -126,6 +127,48 @@ def build_server(config: PgopsConfig, conn_manager: ConnectionManager) -> FastMC
         hotspots, and the slowest statements by total time."""
         advice = await index_advise(conn_manager, limit=limit)
         return advice.to_dict()
+
+    @mcp.tool(name="migration.plan")
+    @tool_boundary
+    async def migration_plan_tool(
+        target: dict[str, Any], allow_drops: bool = False, dry_run: bool = True
+    ) -> dict[str, Any]:
+        """Plan a migration from a target schema. Executes nothing.
+
+        `target` describes the desired state, e.g.
+        {"tables": {"orders": {"columns": {"note": {"type": "text"}}}}}.
+        Returns ordered steps, each annotated with lock impact, an estimated duration
+        with confidence, and a safer alternative where one exists. Tables or columns
+        absent from the target are left alone unless allow_drops=true.
+        """
+        plan = await migration_plan(
+            conn_manager, config, target, allow_drops=allow_drops, dry_run=dry_run
+        )
+        return plan.to_dict()
+
+    if not config.read_only:
+
+        @mcp.tool(name="migration.apply")
+        @tool_boundary
+        async def migration_apply_tool(
+            plan_id: str, confirm_token: str | None = None, name: str = "unnamed"
+        ) -> dict[str, Any]:
+            """Apply a plan produced by migration.plan.
+
+            Destructive or high-risk plans are refused on the first call and return a
+            confirmation token. Records the migration in the pgops_migrations ledger.
+            """
+            return await migration_apply(
+                conn_manager, config, audit, tokens, plan_id,
+                confirm_token=confirm_token, name=name,
+            )
+
+    @mcp.tool(name="migration.history")
+    @tool_boundary
+    async def migration_history_tool(limit: int = 20) -> dict[str, Any]:
+        """Applied-migration history from the ledger, including any interrupted
+        (in_flight) migration that needs manual resolution."""
+        return await migration_history(conn_manager, limit=limit)
 
     @mcp.tool(name="db.health")
     @tool_boundary
