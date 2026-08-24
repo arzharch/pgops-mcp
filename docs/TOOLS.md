@@ -226,17 +226,61 @@ it cannot restore is worse than none. The ledger already stores the applied step
 ---
 
 ## env.topology
-**Phase 5 · Docker read-only API**
+**Phase 5 ✅ implemented · Docker read-only API**
 
-Discover containers/images/ports/volumes; identify Postgres container matching our DSN;
-group by compose project. No daemon writes.
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| all_containers | bool | false | include stopped containers |
+
+Returns `{dsn_host_port, database_container, database_container_note, containers[],
+compose_projects{}}`. The database container is matched by **published host port** from
+the DSN, not by image name — a machine commonly runs several Postgres containers, and
+matching on the image picks the wrong one.
+
+**Container environment variables are never returned.** `Config.Env` holds
+`POSTGRES_PASSWORD` and every other secret on the box; this tool returns an explicit
+allowlist of fields (name, image, status, health, compose project/service, ports, mount
+*destinations*) rather than filtering a denylist, so a new Docker API field cannot leak
+by default.
 
 ## container.logs
-**Phase 5** Tail logs with severity filter and time bound.
+**Phase 5 ✅ implemented**
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| name | str | required | container name |
+| tail | int | 100 | capped at 2000 |
+| min_severity | str? | null | DEBUG/INFO/NOTICE/LOG/WARNING/ERROR/FATAL/PANIC |
+| since_seconds | int? | null | time bound |
+
+Returns `{container, lines[], returned, scanned, min_severity}`. Lines with no
+recognizable severity are dropped when filtering.
 
 ## container.stats
-**Phase 5** CPU/mem/IO snapshot per container; correlation hints vs db.health findings.
+**Phase 5 ✅ implemented**
+
+CPU percent, memory (used/limit/percent), total IO bytes, and CPU throttling counters.
+Takes ~1s: a CPU percentage needs two samples to compute a delta. Memory matches
+`docker stats` accounting (usage minus reclaimable `inactive_file`).
+
+## env.correlate
+**Phase 5 ✅ implemented**
+
+Runs `db.health`, finds the database container, and returns plain-language hints joining
+database symptoms to container resource pressure. Hints are phrased "consistent with",
+never as diagnoses, and the tool stays quiet when nothing is wrong.
 
 ## container.restart / container.exec
-**Phase 5 · Gated twice**: server must run with `--approval-mode`, AND call needs
-confirm_token. Refuse otherwise with explanation.
+**Phase 5 ✅ implemented · Gated twice (exec: three times)**
+
+Not registered as tools at all unless the server runs with `--approval-mode`
+(`PGOPS_APPROVAL_MODE=true`) — an agent is never told they exist. With the flag, each
+call still requires a `confirm_token` bound to that specific container and command.
+
+`container.exec` additionally enforces a **read-only diagnostic command allowlist**
+(`ps`, `df`, `free`, `uptime`, `cat`, `ls`, `pg_isready`, `psql`, …), checked by
+basename so `/bin/bash` cannot bypass it. It deliberately does not offer an arbitrary
+shell.
+
+Error codes: `APPROVAL_MODE_REQUIRED`, `EXEC_NOT_ALLOWED`, `CONFIRMATION_REQUIRED`,
+`CONFIRMATION_MISMATCH`, `CONTAINER_NOT_FOUND`, `DOCKER_UNAVAILABLE`.

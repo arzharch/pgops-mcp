@@ -22,7 +22,7 @@ src/pgops/
 │   ├── advisor.py       ✅ index.advise
 │   ├── health.py        ✅ db.health
 │   ├── migrations.py    ✅ migration.plan / apply / history  (rollback still open)
-│   └── environment.py   ·  env.topology, container.logs/stats/restart/exec
+│   └── environment.py   ✅ env.topology/correlate, container.logs/stats/restart/exec
 └── migrations/
     ├── diff.py          ✅ structural schema diff → dependency-ordered change set
     ├── lock_analysis.py ✅ op-class × table-size estimates + safe patterns (ADR-004)
@@ -36,7 +36,7 @@ tests/
 ├── test_health.py       ✅  test_plan_analysis.py ✅  test_explain.py     ✅
 ├── test_advisor.py      ✅  test_server.py        ✅ (end-to-end via FastMCP)
 ├── test_lock_analysis.py ✅ test_diff.py          ✅  test_migrations.py ✅
-├── test_timing.py       ✅
+├── test_timing.py       ✅  test_environment.py   ✅ (skips without a Docker daemon)
 └── test_stdio_server.py ✅ (server as a real subprocess over stdio)
 
 Deviations from the original plan, and why:
