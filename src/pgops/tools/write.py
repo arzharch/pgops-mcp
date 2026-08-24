@@ -14,7 +14,6 @@ incident review needs.
 
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -26,6 +25,7 @@ from pgops.config import PgopsConfig
 from pgops.connections import ConnectionManager
 from pgops.errors import ErrorCode, PgopsError
 from pgops.guardrails import ConfirmationTokenStore, evaluate
+from pgops.timing import Elapsed
 
 
 @dataclass(slots=True)
@@ -112,7 +112,7 @@ async def query_write(
     resolved_timeout = config.timeouts.resolve(timeout_ms)
     pool = await conn_manager.readwrite_pool()
 
-    start = time.monotonic()
+    elapsed = Elapsed()
     try:
         async with pool.acquire() as conn, conn.transaction():
             await conn.execute(f"SET LOCAL statement_timeout = {int(resolved_timeout)}")
@@ -145,7 +145,7 @@ async def query_write(
         )
         raise PgopsError(ErrorCode.INVALID_ARGUMENT, str(exc)) from exc
 
-    duration_ms = (time.monotonic() - start) * 1000
+    duration_ms = elapsed.ms
     rows = _rows_affected(status)
     audit_id = audit.record(
         AuditEntry(

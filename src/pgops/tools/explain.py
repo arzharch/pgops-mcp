@@ -26,7 +26,6 @@ How that is handled here:
 from __future__ import annotations
 
 import json
-import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -40,6 +39,7 @@ from pgops.errors import ErrorCode, PgopsError
 from pgops.guardrails import ConfirmationTokenStore, evaluate
 from pgops.plan_analysis import Verdict, parse_plan
 from pgops.plan_analysis import analyze as analyze_plan
+from pgops.timing import Elapsed
 
 
 @dataclass(slots=True)
@@ -119,7 +119,7 @@ async def query_explain(
                 )
                 raise
 
-    start = time.monotonic()
+    elapsed = Elapsed()
     try:
         if mutating and analyze:
             raw = await _explain_mutating_rolled_back(
@@ -136,7 +136,7 @@ async def query_explain(
     except asyncpg.PostgresError as exc:
         raise PgopsError(ErrorCode.INVALID_ARGUMENT, str(exc)) from exc
 
-    duration_ms = (time.monotonic() - start) * 1000
+    duration_ms = elapsed.ms
     root, meta = parse_plan(raw)
     verdicts = analyze_plan(root)
 

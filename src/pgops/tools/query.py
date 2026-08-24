@@ -10,7 +10,6 @@ past that point; the original SQL text reaches the server untouched.
 
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -21,6 +20,7 @@ from pgops.config import PgopsConfig
 from pgops.connections import ConnectionManager
 from pgops.errors import ErrorCode, PgopsError
 from pgops.serialize import serialize_record
+from pgops.timing import Elapsed
 
 
 @dataclass(slots=True)
@@ -58,7 +58,7 @@ async def query_read(
     resolved_limit = config.row_limits.resolve(limit)
     resolved_timeout = config.timeouts.resolve(timeout_ms)
 
-    start = time.monotonic()
+    elapsed = Elapsed()
     try:
         async with conn_manager.acquire_readonly() as conn, conn.transaction():
             # int() is redundant given resolve() returns an int, but this is the one
@@ -78,7 +78,7 @@ async def query_read(
     except asyncpg.PostgresError as exc:
         raise PgopsError(ErrorCode.INVALID_ARGUMENT, str(exc)) from exc
 
-    duration_ms = (time.monotonic() - start) * 1000
+    duration_ms = elapsed.ms
     truncated = len(records) > resolved_limit
     rows = [serialize_record(r) for r in records[:resolved_limit]]
     return QueryReadResult(rows=rows, row_count=len(rows), truncated=truncated, duration_ms=duration_ms)
