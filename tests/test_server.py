@@ -17,7 +17,7 @@ from pgops.__main__ import build_server
 from pgops.config import PgopsConfig
 from pgops.connections import ConnectionManager
 
-DOCUMENTED_TOOL_NAMES = {"schema.inspect", "query.read", "db.health"}
+DOCUMENTED_TOOL_NAMES = {"schema.inspect", "query.read", "db.health", "query.write"}
 
 
 async def _server(conn_manager: ConnectionManager, config: PgopsConfig) -> FastMCP:
@@ -70,3 +70,41 @@ async def test_postgres_error_surfaces_as_structured_error(
     result = await server.call_tool("query.read", {"sql": "SELECT * FROM no_such_table"})
     assert result.structured_content is not None
     assert result.structured_content["error"]["code"] == "INVALID_ARGUMENT"
+
+
+async def test_write_tool_absent_in_read_only_mode(dsn: str) -> None:
+    """--read-only removes the tool from the advertised surface entirely, rather than
+    registering it and refusing at call time. An agent cannot be tempted by a tool it
+    was never told exists."""
+    ro_config = PgopsConfig.from_env(dsn=dsn, read_only=True)
+    manager = ConnectionManager(ro_config)
+    await manager.start()
+    try:
+        server = build_server(ro_config, manager)
+        names = {t.name for t in await server.list_tools()}
+        assert "query.write" not in names
+        assert "query.read" in names
+    finally:
+        await manager.stop()
+
+
+async def test_confirmation_flow_end_to_end_through_mcp(
+    conn_manager: ConnectionManager, config: PgopsConfig
+) -> None:
+    """The whole Phase 2 contract as an agent experiences it: refused with a reason and
+    a token, then executed when called again with that token."""
+    server = await _server(conn_manager, config)
+
+    refusal = await server.call_tool("query.write", {"sql": "DELETE FROM items"})
+    assert refusal.structured_content is not None
+    error = refusal.structured_content["error"]
+    assert error["code"] == "CONFIRMATION_REQUIRED"
+    assert "every row" in error["message"]
+
+    token = error["hint"].split("confirm_token=")[1].split("'")[1]
+    executed = await server.call_tool(
+        "query.write", {"sql": "DELETE FROM items", "confirm_token": token}
+    )
+    assert executed.structured_content is not None
+    assert executed.structured_content["rows_affected"] == 250
+    json.dumps(executed.structured_content)
