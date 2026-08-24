@@ -181,7 +181,9 @@ class PlanNode:
         return out
 
 
-def parse_plan(explain_json: list[dict[str, Any]] | dict[str, Any]) -> tuple[PlanNode, dict[str, Any]]:
+def parse_plan(
+    explain_json: list[dict[str, Any]] | dict[str, Any],
+) -> tuple[PlanNode, dict[str, Any]]:
     """Turn `EXPLAIN (FORMAT JSON)` output into a tree plus top-level timings.
 
     Postgres returns a single-element list; accepting a bare dict too keeps this usable
@@ -267,8 +269,7 @@ def _seq_scan_rules(node: PlanNode) -> list[Verdict]:
             Severity.WARNING,
             node.label,
             f"sequential scan examined {examined:,.0f} rows on {node.relation}",
-            f"an index on {node.relation} covering the filter would avoid reading "
-            "the whole table",
+            f"an index on {node.relation} covering the filter would avoid reading the whole table",
         )
     ]
 

@@ -56,8 +56,22 @@ _SEVERITY_RE = re.compile(
 # diagnostic commands; anything else is refused with an explanation. An operator who
 # genuinely wants a shell has one — this tool is not the right way to get it.
 _EXEC_ALLOWLIST = {
-    "ps", "df", "free", "uptime", "cat", "ls", "env", "netstat", "ss",
-    "pg_isready", "psql", "postgres", "id", "whoami", "hostname", "date",
+    "ps",
+    "df",
+    "free",
+    "uptime",
+    "cat",
+    "ls",
+    "env",
+    "netstat",
+    "ss",
+    "pg_isready",
+    "psql",
+    "postgres",
+    "id",
+    "whoami",
+    "hostname",
+    "date",
 }
 
 
@@ -251,8 +265,7 @@ async def container_logs(
         filtered = [
             ln
             for ln in lines
-            if (sev := _line_severity(ln)) is not None
-            and _SEVERITY_ORDER.index(sev) >= threshold
+            if (sev := _line_severity(ln)) is not None and _SEVERITY_ORDER.index(sev) >= threshold
         ]
 
     return {
@@ -567,4 +580,9 @@ async def container_exec(
             detail=f"exit_code={exit_code}",
         )
     )
-    return {"container": name, "command": command, "exit_code": exit_code, "output": output[:20_000]}
+    return {
+        "container": name,
+        "command": command,
+        "exit_code": exit_code,
+        "output": output[:20_000],
+    }

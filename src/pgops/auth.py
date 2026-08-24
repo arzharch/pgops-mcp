@@ -14,7 +14,8 @@ Scopes map to the danger tiers the rest of the project already uses, so a token 
 issued that is genuinely incapable of the thing you are worried about:
 
     pgops:read     schema.inspect, query.read, query.explain, db.health, index.advise,
-                   migration.plan, migration.history, env.*, container.logs/stats
+                   migration.plan, migration.describe, migration.history, env.*,
+                   container.logs/stats
     pgops:write    query.write, migration.apply
     pgops:admin    container.restart, container.exec
 
@@ -60,6 +61,7 @@ TOOL_SCOPES: dict[str, Scope] = {
     "db.health": Scope.READ,
     "index.advise": Scope.READ,
     "migration.plan": Scope.READ,
+    "migration.describe": Scope.READ,
     "migration.history": Scope.READ,
     "env.topology": Scope.READ,
     "env.correlate": Scope.READ,

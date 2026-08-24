@@ -52,7 +52,12 @@ from pgops.tools.environment import (
 )
 from pgops.tools.explain import query_explain
 from pgops.tools.health import db_health
-from pgops.tools.migrations import migration_apply, migration_history, migration_plan
+from pgops.tools.migrations import (
+    migration_apply,
+    migration_describe,
+    migration_history,
+    migration_plan,
+)
 from pgops.tools.query import query_read
 from pgops.tools.schema import Level, schema_inspect
 from pgops.tools.write import query_write
@@ -76,9 +81,7 @@ def configure_logging(level: int = logging.INFO) -> None:
     root.propagate = False
 
 
-def build_server(
-    config: PgopsConfig, conn_manager: ConnectionManager, auth: Any = None
-) -> FastMCP:
+def build_server(config: PgopsConfig, conn_manager: ConnectionManager, auth: Any = None) -> FastMCP:
     mcp: FastMCP = FastMCP("pgops-mcp", auth=auth)
 
     # The token verifier answers "is this caller real". It does NOT answer "may this
@@ -149,6 +152,8 @@ def build_server(
         analyze: bool = False,
         confirm_token: str | None = None,
         timeout_ms: int | None = None,
+        summarize: bool = False,
+        ctx: Context | None = None,
     ) -> dict[str, Any]:
         """Explain a statement and return the plan plus actionable verdicts.
 
@@ -156,6 +161,11 @@ def build_server(
         executes the statement to collect real timings; for a mutating statement that
         runs inside a transaction which is always rolled back, and requires the same
         confirmation token as query.write.
+
+        summarize=true additionally asks your own model (via MCP sampling) for a prose
+        walkthrough. It costs your tokens and is skipped silently if your client does
+        not support sampling — the plan and the deterministic verdicts are returned
+        either way.
         """
         result = await query_explain(
             conn_manager,
@@ -166,6 +176,8 @@ def build_server(
             analyze=analyze,
             confirm_token=confirm_token,
             timeout_ms=timeout_ms,
+            summarize=summarize,
+            ctx=ctx,
         )
         return result.to_dict()
 
@@ -208,9 +220,41 @@ def build_server(
             confirmation token. Records the migration in the pgops_migrations ledger.
             """
             return await migration_apply(
-                conn_manager, config, audit, tokens, plan_id,
-                confirm_token=confirm_token, name=name,
+                conn_manager,
+                config,
+                audit,
+                tokens,
+                plan_id,
+                confirm_token=confirm_token,
+                name=name,
             )
+
+    @mcp.tool(name="migration.describe")
+    @tool_boundary
+    async def migration_describe_tool(
+        description: str,
+        allow_drops: bool = False,
+        dry_run: bool = True,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        """Plan a schema change described in plain English.
+
+        Uses MCP sampling — *your* model does the English-to-target translation, so this
+        server needs no API key of its own. The model only proposes a target schema; the
+        SQL, the lock analysis and the confirmation gate are all still produced by the
+        deterministic planner, and the interpretation is returned so you can check it.
+
+        Requires a client that supports sampling; use migration.plan with an explicit
+        target otherwise.
+        """
+        return await migration_describe(
+            conn_manager,
+            config,
+            description,
+            allow_drops=allow_drops,
+            dry_run=dry_run,
+            ctx=ctx,
+        )
 
     @mcp.tool(name="migration.history")
     @tool_boundary
@@ -368,9 +412,13 @@ def build_server(
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="pgops-mcp")
     parser.add_argument("--dsn", default=None, help="Postgres DSN (overrides PGOPS_DSN)")
-    parser.add_argument("--read-only", action="store_true", default=None, help="disable write tools")
     parser.add_argument(
-        "--audit-log", default=None, help="path to the JSONL audit log (default ~/.pgops/audit.jsonl)"
+        "--read-only", action="store_true", default=None, help="disable write tools"
+    )
+    parser.add_argument(
+        "--audit-log",
+        default=None,
+        help="path to the JSONL audit log (default ~/.pgops/audit.jsonl)",
     )
     parser.add_argument(
         "--selfcheck",
@@ -401,9 +449,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     sub = parser.add_subparsers(dest="command")
 
     keygen = sub.add_parser("keygen", help="generate the RSA keypair for agent tokens")
-    keygen.add_argument(
-        "--key-dir", default="~/.pgops/keys", help="where to write the keypair"
-    )
+    keygen.add_argument("--key-dir", default="~/.pgops/keys", help="where to write the keypair")
 
     token = sub.add_parser("issue-token", help="mint a bearer token for an agent")
     token.add_argument("--subject", required=True, help="agent identity, recorded in the audit log")

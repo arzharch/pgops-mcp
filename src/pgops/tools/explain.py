@@ -39,6 +39,7 @@ from pgops.errors import ErrorCode, PgopsError
 from pgops.guardrails import ConfirmationTokenStore, evaluate
 from pgops.plan_analysis import Verdict, parse_plan
 from pgops.plan_analysis import analyze as analyze_plan
+from pgops.sampling import SUMMARY_SYSTEM_PROMPT, sample_text
 from pgops.timing import Elapsed
 
 
@@ -48,14 +49,18 @@ class ExplainResult:
     verdicts: list[Verdict]
     analyzed: bool
     meta: dict[str, Any]
+    summary: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "analyzed": self.analyzed,
             "plan": self.plan,
             "verdicts": [v.to_dict() for v in self.verdicts],
             **self.meta,
         }
+        if self.summary:
+            payload["summary"] = self.summary
+        return payload
 
 
 def _explain_prefix(analyze_flag: bool) -> str:
@@ -73,6 +78,8 @@ async def query_explain(
     analyze: bool = False,
     confirm_token: str | None = None,
     timeout_ms: int | None = None,
+    summarize: bool = False,
+    ctx: Any = None,
 ) -> ExplainResult:
     classification = classify(sql)
     resolved_timeout = config.timeouts.resolve(timeout_ms)
@@ -122,9 +129,7 @@ async def query_explain(
     elapsed = Elapsed()
     try:
         if mutating and analyze:
-            raw = await _explain_mutating_rolled_back(
-                conn_manager, explain_sql, resolved_timeout
-            )
+            raw = await _explain_mutating_rolled_back(conn_manager, explain_sql, resolved_timeout)
         else:
             raw = await _explain_readonly(conn_manager, explain_sql, resolved_timeout)
     except asyncpg.QueryCanceledError as exc:
@@ -152,7 +157,27 @@ async def query_explain(
             )
         )
 
-    return ExplainResult(plan=root.to_dict(), verdicts=verdicts, analyzed=analyze, meta=meta)
+    plan_dict = root.to_dict()
+    summary = None
+    if summarize:
+        # Sampling asks the *client's* model, so this costs the user's tokens and is
+        # opt-in rather than automatic. The plan and the deterministic verdicts are
+        # returned either way — the summary is an addition to the evidence, never a
+        # replacement for it, and a client without sampling support loses nothing else.
+        summary = await sample_text(
+            ctx,
+            "Explain this PostgreSQL plan and where its time goes.\n\n"
+            f"Statement:\n{sql}\n\n"
+            # Truncated: a plan over a wide partitioned table can be enormous, and the
+            # shape that explains the cost is at the top of the tree.
+            f"Plan:\n{json.dumps(plan_dict, indent=2)[:12000]}\n\n"
+            f"Analyzer verdicts:\n{json.dumps([v.to_dict() for v in verdicts], indent=2)}",
+            SUMMARY_SYSTEM_PROMPT,
+        )
+
+    return ExplainResult(
+        plan=plan_dict, verdicts=verdicts, analyzed=analyze, meta=meta, summary=summary
+    )
 
 
 async def _explain_readonly(

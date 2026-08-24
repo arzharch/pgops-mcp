@@ -81,4 +81,6 @@ async def query_read(
     duration_ms = elapsed.ms
     truncated = len(records) > resolved_limit
     rows = [serialize_record(r) for r in records[:resolved_limit]]
-    return QueryReadResult(rows=rows, row_count=len(rows), truncated=truncated, duration_ms=duration_ms)
+    return QueryReadResult(
+        rows=rows, row_count=len(rows), truncated=truncated, duration_ms=duration_ms
+    )

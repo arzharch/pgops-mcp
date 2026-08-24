@@ -189,7 +189,9 @@ async def index_advise(conn_manager: ConnectionManager, limit: int = 10) -> Inde
     advice = IndexAdvice()
     async with conn_manager.acquire_readonly() as conn:
         stats_row = await conn.fetchrow(_STATS_AGE_SQL)
-        window_s: float | None = float(stats_row["seconds"]) if stats_row and stats_row["seconds"] else None
+        window_s: float | None = (
+            float(stats_row["seconds"]) if stats_row and stats_row["seconds"] else None
+        )
         window_trustworthy = window_s is not None and window_s >= UNUSED_INDEX_MIN_OBSERVATION_S
         advice.stats_window = {
             "stats_reset": stats_row["stats_reset"].isoformat()
@@ -270,8 +272,6 @@ async def index_advise(conn_manager: ConnectionManager, limit: int = 10) -> Inde
                 "(requires a restart) and CREATE EXTENSION pg_stat_statements."
             )
 
-    if not any(
-        [advice.unused_indexes, advice.redundant_indexes, advice.scan_hotspots]
-    ):
+    if not any([advice.unused_indexes, advice.redundant_indexes, advice.scan_hotspots]):
         advice.notes.append("no unused or redundant indexes, and no sequential-scan hotspots")
     return advice

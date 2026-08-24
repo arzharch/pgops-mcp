@@ -193,9 +193,7 @@ def diff_schema(
     _validate_target(target)
     changeset = ChangeSet()
 
-    live_tables = {
-        t["name"]: t for t in live.get("tables", []) if t["name"] not in INTERNAL_TABLES
-    }
+    live_tables = {t["name"]: t for t in live.get("tables", []) if t["name"] not in INTERNAL_TABLES}
     target_tables = target["tables"]
 
     claimed = set(target_tables) & INTERNAL_TABLES
@@ -253,7 +251,9 @@ def _emit_create_table(changeset: ChangeSet, table: str, spec: dict[str, Any]) -
             sql=f"CREATE TABLE {_quote_ident(table)} ({cols_sql})",
         )
     )
-    _emit_constraints_and_indexes(changeset, table, spec, existing_constraints=set(), existing_indexes=set())
+    _emit_constraints_and_indexes(
+        changeset, table, spec, existing_constraints=set(), existing_indexes=set()
+    )
 
 
 def _emit_constraints_and_indexes(
@@ -286,9 +286,7 @@ def _emit_constraints_and_indexes(
                 kind=ChangeKind.CREATE_INDEX,
                 table=table,
                 target=name,
-                sql=(
-                    f"CREATE INDEX {_quote_ident(name)} ON {_quote_ident(table)} ({columns})"
-                ),
+                sql=(f"CREATE INDEX {_quote_ident(name)} ON {_quote_ident(table)} ({columns})"),
             )
         )
 

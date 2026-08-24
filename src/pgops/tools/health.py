@@ -93,7 +93,11 @@ class Finding:
     detail: Any = None
 
     def to_dict(self) -> dict[str, Any]:
-        d: dict[str, Any] = {"category": self.category, "severity": self.severity, "summary": self.summary}
+        d: dict[str, Any] = {
+            "category": self.category,
+            "severity": self.severity,
+            "summary": self.summary,
+        }
         if self.detail is not None:
             d["detail"] = self.detail
         return d
@@ -121,7 +125,9 @@ async def db_health(conn_manager: ConnectionManager) -> HealthReport:
         if ratio is not None:
             # below ~0.99 is the conventional "look into shared_buffers / working set
             # size" line for an OLTP workload; not a hard threshold, just a nudge.
-            severity: Severity = "ok" if ratio >= 0.99 else ("warning" if ratio >= 0.90 else "critical")
+            severity: Severity = (
+                "ok" if ratio >= 0.99 else ("warning" if ratio >= 0.90 else "critical")
+            )
             findings.append(
                 Finding(
                     "cache_hit_ratio",
@@ -212,7 +218,11 @@ async def db_health(conn_manager: ConnectionManager) -> HealthReport:
                 )
             )
 
-    if not any(f.category in {"dead_tuples", "long_running_queries", "waiting_locks"} for f in findings):
-        findings.append(Finding("overall", "ok", "no dead-tuple, long-query, or lock-wait issues found"))
+    if not any(
+        f.category in {"dead_tuples", "long_running_queries", "waiting_locks"} for f in findings
+    ):
+        findings.append(
+            Finding("overall", "ok", "no dead-tuple, long-query, or lock-wait issues found")
+        )
 
     return HealthReport(findings=findings)

@@ -112,9 +112,13 @@ def classify(sql: str) -> Classification:
         return Classification(StatementClass.DDL, leading, f"{leading} statement")
 
     if leading in _READ_LEADING:
-        return Classification(StatementClass.READ, leading, f"{leading} statement, no write DML found")
+        return Classification(
+            StatementClass.READ, leading, f"{leading} statement, no write DML found"
+        )
 
-    return Classification(StatementClass.UNKNOWN, leading, f"unrecognized leading keyword {leading!r}")
+    return Classification(
+        StatementClass.UNKNOWN, leading, f"unrecognized leading keyword {leading!r}"
+    )
 
 
 def _leading_keyword(tokens: list[Token]) -> str:
