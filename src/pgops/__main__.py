@@ -24,6 +24,7 @@ from pgops.config import PgopsConfig
 from pgops.connections import ConnectionManager
 from pgops.errors import PgopsError, tool_boundary
 from pgops.guardrails import ConfirmationTokenStore
+from pgops.middleware import ScopeEnforcement
 from pgops.prompts import (
     diagnose_slow_query,
     explain_safety_model,
@@ -79,6 +80,15 @@ def build_server(
     config: PgopsConfig, conn_manager: ConnectionManager, auth: Any = None
 ) -> FastMCP:
     mcp: FastMCP = FastMCP("pgops-mcp", auth=auth)
+
+    # The token verifier answers "is this caller real". It does NOT answer "may this
+    # caller run this tool" — its required_scopes list is checked once per request
+    # against a single server-wide value, so without this middleware a pgops:read token
+    # can call query.write. Only added under auth: over stdio there is no token to
+    # check and every call would be denied for lacking a scope nobody issued.
+    if auth is not None:
+        mcp.add_middleware(ScopeEnforcement())
+
     audit = AuditLog(config.audit_path)
     tokens = ConfirmationTokenStore(ttl_s=config.confirm_token_ttl_s)
 
