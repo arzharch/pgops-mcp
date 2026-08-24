@@ -121,6 +121,7 @@ class PgopsConfig:
         dsn: str | None = None,
         read_only: bool | None = None,
         audit_path: Path | None = None,
+        approval_mode: bool | None = None,
     ) -> PgopsConfig:
         resolved_dsn = dsn or os.environ.get("PGOPS_DSN")
         if not resolved_dsn:
@@ -136,6 +137,10 @@ class PgopsConfig:
             dsn=resolved_dsn,
             readonly_dsn=os.environ.get("PGOPS_READONLY_DSN"),
             read_only=read_only if read_only is not None else _bool_env("PGOPS_READ_ONLY", False),
-            approval_mode=_bool_env("PGOPS_APPROVAL_MODE", False),
+            approval_mode=(
+                approval_mode
+                if approval_mode is not None
+                else _bool_env("PGOPS_APPROVAL_MODE", False)
+            ),
             **kwargs,  # type: ignore[arg-type]
         )

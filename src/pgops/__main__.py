@@ -17,6 +17,14 @@ from pgops.connections import ConnectionManager
 from pgops.errors import PgopsError, tool_boundary
 from pgops.guardrails import ConfirmationTokenStore
 from pgops.tools.advisor import index_advise
+from pgops.tools.environment import (
+    container_exec,
+    container_logs,
+    container_restart,
+    container_stats,
+    env_correlate,
+    env_topology,
+)
 from pgops.tools.explain import query_explain
 from pgops.tools.health import db_health
 from pgops.tools.migrations import migration_apply, migration_history, migration_plan
@@ -170,6 +178,72 @@ def build_server(config: PgopsConfig, conn_manager: ConnectionManager) -> FastMC
         (in_flight) migration that needs manual resolution."""
         return await migration_history(conn_manager, limit=limit)
 
+    @mcp.tool(name="env.topology")
+    @tool_boundary
+    async def env_topology_tool(all_containers: bool = False) -> dict[str, Any]:
+        """Discover containers, compose projects, ports and health, and identify which
+        container serves this server's DSN (matched by published host port).
+
+        Container environment variables are never returned — they hold credentials.
+        """
+        return await env_topology(config, all_containers=all_containers)
+
+    @mcp.tool(name="env.correlate")
+    @tool_boundary
+    async def env_correlate_tool() -> dict[str, Any]:
+        """Join db.health findings with the database container's resource usage and
+        return plain-language hints about whether container pressure explains the
+        database's symptoms."""
+        report = await db_health(conn_manager)
+        findings = [f.to_dict() for f in report.findings]
+        return await env_correlate(config, findings)
+
+    @mcp.tool(name="container.logs")
+    @tool_boundary
+    async def container_logs_tool(
+        name: str,
+        tail: int = 100,
+        min_severity: str | None = None,
+        since_seconds: int | None = None,
+    ) -> dict[str, Any]:
+        """Tail a container's logs, optionally filtered to a minimum Postgres severity
+        (DEBUG/INFO/NOTICE/LOG/WARNING/ERROR/FATAL/PANIC)."""
+        return await container_logs(
+            name, tail=tail, min_severity=min_severity, since_seconds=since_seconds
+        )
+
+    @mcp.tool(name="container.stats")
+    @tool_boundary
+    async def container_stats_tool(name: str) -> dict[str, Any]:
+        """CPU, memory and IO snapshot for a container. Takes about a second: a CPU
+        percentage requires two samples to compute a delta."""
+        return await container_stats(name)
+
+    if config.approval_mode:
+
+        @mcp.tool(name="container.restart")
+        @tool_boundary
+        async def container_restart_tool(
+            name: str, confirm_token: str | None = None, timeout: int = 10
+        ) -> dict[str, Any]:
+            """Restart a container. Requires --approval-mode AND a confirmation token.
+            Dropping connections is disruptive; relay the reason to the user first."""
+            return await container_restart(
+                config, audit, tokens, name, confirm_token=confirm_token, timeout=timeout
+            )
+
+        @mcp.tool(name="container.exec")
+        @tool_boundary
+        async def container_exec_tool(
+            name: str, command: list[str], confirm_token: str | None = None
+        ) -> dict[str, Any]:
+            """Run a read-only diagnostic command inside a container. Requires
+            --approval-mode AND a confirmation token, and the command must be in the
+            diagnostic allowlist — this tool does not offer an arbitrary shell."""
+            return await container_exec(
+                config, audit, tokens, name, command, confirm_token=confirm_token
+            )
+
     @mcp.tool(name="db.health")
     @tool_boundary
     async def db_health_tool() -> dict[str, Any]:
@@ -194,6 +268,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="connect, introspect, print a summary, then exit (no MCP transport)",
     )
     parser.add_argument("--verbose", action="store_true", help="debug-level logging on stderr")
+    parser.add_argument(
+        "--approval-mode",
+        action="store_true",
+        default=None,
+        help="permit container mutations (restart/exec); off by default because Docker "
+        "socket access is equivalent to root on the host",
+    )
     return parser.parse_args(argv)
 
 
@@ -219,6 +300,7 @@ def main() -> None:
             dsn=args.dsn,
             read_only=args.read_only,
             audit_path=Path(args.audit_log) if args.audit_log else None,
+            approval_mode=args.approval_mode,
         )
     except PgopsError as exc:
         print(f"pgops-mcp: {exc.to_dict()}", file=sys.stderr)
