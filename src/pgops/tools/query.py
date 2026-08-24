@@ -60,8 +60,12 @@ async def query_read(
 
     start = time.monotonic()
     try:
-        async with conn_manager.readonly_pool.acquire() as conn, conn.transaction():
-            await conn.execute(f"SET LOCAL statement_timeout = {resolved_timeout}")
+        async with conn_manager.acquire_readonly() as conn, conn.transaction():
+            # int() is redundant given resolve() returns an int, but this is the one
+            # place a value is formatted into SQL text (statement_timeout cannot be a
+            # bind parameter — it's a SET, not a query), so the cast is kept as an
+            # explicit, local guarantee rather than an inherited assumption.
+            await conn.execute(f"SET LOCAL statement_timeout = {int(resolved_timeout)}")
             cursor = await conn.cursor(sql)
             # fetch limit+1 so we can report `truncated` without a second round trip
             records = await cursor.fetch(resolved_limit + 1)
