@@ -19,10 +19,10 @@ makes every action classifiable, confirmable, and auditable.
 
 | Group | Tools |
 |---|---|
-| Schema | `schema.inspect`, `schema.diff` |
+| Schema | `schema.inspect` |
 | Queries | `query.read`, `query.write` (guarded), `query.explain` (parsed plan + verdict) |
 | Performance | `index.advise`, `db.health` |
-| Migrations | `migration.plan` (dry-run + lock analysis), `migration.apply`, `migration.rollback` |
+| Migrations | `migration.plan` (dry-run + lock analysis), `migration.apply`, `migration.history` |
 | Environment | `env.topology`, `container.logs`, `container.stats`, `container.restart`* |
 
 \* gated behind approval mode.
@@ -69,8 +69,9 @@ Add to Claude Desktop:
 
 ## Status
 
-**Phases 0–3 complete** (163 tests, all guardrails and verdicts proven against real
-Postgres via testcontainers — no mocks).
+**Phases 0–4 complete** (243 tests, every guardrail, verdict and lock-impact rule proven
+against real Postgres via testcontainers — no mocks — plus an end-to-end suite that
+drives the server as a real MCP subprocess over stdio).
 
 | Phase | State | Tools |
 |---|---|---|
@@ -78,8 +79,20 @@ Postgres via testcontainers — no mocks).
 | 1 · Connection core + read path | ✅ | `schema.inspect`, `query.read`, `db.health` |
 | 2 · Write path + safety | ✅ | `query.write`, guardrails, confirmation tokens, audit log |
 | 3 · Performance brain | ✅ | `query.explain` (plan verdicts), `index.advise` |
-| 4 · Migration engine | next | `schema.diff`, `migration.plan/apply/rollback` |
-| 5 · Docker layer | planned | `env.topology`, `container.logs/stats` |
+| 4 · Migration engine | ✅ | `migration.plan` (lock analysis + dry run), `apply`, `history` |
+| 5 · Docker layer | next | `env.topology`, `container.logs/stats` |
+
+`migration.rollback` is deliberately still open — see [`docs/TOOLS.md`](docs/TOOLS.md).
+
+Sample of what `migration.plan` returns for a type change on the 1.2M-row `orders`:
+
+```
+ALTER TABLE "orders" ALTER COLUMN "total_cents" TYPE bigint
+  op=table_rewrite  risk=high  estimate=4800ms  confidence=medium
+  why:   rewrites every row and rebuilds every index, holding AccessExclusiveLock
+  SAFER: add a new column of the target type, backfill in batches, sync with a
+         trigger, swap the names, then drop the old column
+```
 
 Quickstart the dev database (host port **5433**, to avoid colliding with a local
 Postgres on 5432):

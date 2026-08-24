@@ -536,14 +536,174 @@ around reading it when it *is* present, because the column names changed across 
 versions (`total_time` became `total_exec_time` in PG13); a version mismatch degrades
 the same way rather than taking out the whole response.
 
-## Section 5: Phase 4 — Migration engine (populate as you build)
+## Section 5: Phase 4 — Migration engine
 
 **Q: Which ALTERs are metadata-only vs rewrite in Postgres, and why does it matter?**
-A: (to fill — ADD nullable column cheap; TYPE changes rewrite; NOT NULL needs scan unless
-default + existing validation path; index creation locking vs CONCURRENTLY trade-offs)
+A: I verified this rather than recalling it — checking `relfilenode` before and after,
+since a changed relfilenode *is* a rewrite:
+
+```
+ADD COLUMN b int NOT NULL DEFAULT 7     -> relfilenode UNCHANGED  (no rewrite)
+ALTER COLUMN a TYPE bigint              -> relfilenode CHANGED    (full rewrite)
+ADD COLUMN c int DEFAULT (random())     -> relfilenode CHANGED    (full rewrite)
+```
+
+The punchline is the part people miss: **all three take `AccessExclusiveLock`** — the
+strictest lock Postgres has, blocking even `SELECT`. So lock *mode* tells you almost
+nothing about danger. What separates a non-event from a six-minute outage is whether the
+operation rewrites or scans the table *while holding* that lock. A metadata-only change
+holds AccessExclusive for microseconds; a rewrite holds it for as long as copying every
+row takes.
+
+That's also why the constant-vs-volatile `DEFAULT` distinction matters so much. Those two
+`ADD COLUMN` statements look nearly identical and differ by a full table rewrite —
+Postgres 11 added the optimization for non-volatile defaults only. `DEFAULT 7` is free;
+`DEFAULT random()` rewrites 1.2M rows.
+
+Beyond that: `SET NOT NULL` scans but doesn't rewrite (and PG12+ can skip even the scan
+if a validated `CHECK (col IS NOT NULL)` already exists); `ADD CONSTRAINT` scans and
+blocks writes, which is why the `NOT VALID` → `VALIDATE CONSTRAINT` split exists —
+`VALIDATE` takes only `ShareUpdateExclusiveLock` and blocks neither reads nor writes.
+
+**Q: How do you turn that into a risk rating?**
+A: Duration × *what is blocked*, not duration alone:
+
+```python
+high_threshold = 1_000 if self.blocks_reads else 5_000
+```
+
+Four seconds of AccessExclusiveLock is a user-visible outage; four seconds blocking only
+writes is a slow deploy. Ranking them the same would either cry wolf about every index
+build or wave through a genuine outage.
+
+**Q: Where do the time estimates come from, and how much do you trust them?**
+A: Measured, then deliberately made pessimistic. On this machine a rewrite ran at ~500k
+rows/s and an index build at ~650k rows/s; the constants in the code are roughly half
+that. For a safety tool the dangerous direction to be wrong in is *optimistic* — someone
+told "2 seconds" who then takes two minutes of downtime on slower production storage was
+actively misled by my tool.
+
+And per ADR-004 they're never presented as guarantees. There's a test asserting that
+nothing which scales with table size may claim `high` confidence, because the real rate
+depends on hardware, cache state, and concurrent load that I cannot observe from outside.
+Fabricating "this will take 4.2 seconds" is worse than useless — someone would plan a
+maintenance window around it.
+
+**Q: Why take a target schema as JSON instead of migration SQL?**
+A: Describing desired *state* is far less error-prone for an agent than writing migration
+SQL, and it lets the engine own the questions that actually matter — ordering, lock
+impact, and whether a step is destructive. If the agent hands me SQL, I'm reduced to
+executing whatever order it happened to pick.
+
+Ordering is a correctness requirement, not cosmetics: Postgres rejects an index on a
+column added later in the same batch. Creations go outside-in (tables → columns →
+constraints → indexes) and drops strictly in reverse, because a dependency must be
+created after what it depends on and dropped before it.
+
+One subtlety worth mentioning: I normalize type aliases before comparing. Postgres
+reports canonical names, so a raw string compare of `int` against `integer` would emit an
+`ALTER TYPE` — a full table rewrite — for two identical types. An expensive no-op is a
+bad bug for a migration tool.
+
+**Q: What happens if a table isn't mentioned in the target?**
+A: Nothing — `allow_drops` defaults to false. A target that merely omits a table is far
+more likely to be a partial description than a request to destroy it, and deleting data
+because something went unmentioned is exactly the failure this project exists to prevent.
+The response includes a note saying what was left alone and how to opt in.
 
 **Q: How does crash recovery work mid-migration?**
-A: (to fill — ledger statuses, transactional steps, verify-on-resume)
+A: The ledger row is written with status `in_flight` **before** any DDL runs, then
+updated to `applied` or `failed`. That ordering is the whole design. A ledger that
+inserts a row on success — the obvious approach — leaves *no trace at all* of a process
+killed mid-migration, so the next run cannot distinguish "never started" from "half
+applied".
+
+On startup, a row still marked `in_flight` means a crash, and `apply` refuses to proceed
+rather than guessing which steps landed. There's a test that simulates exactly this by
+inserting an `in_flight` row directly and asserting the next apply raises
+`MIGRATION_IN_FLIGHT` and changes nothing.
+
+The ledger also uses a *partial* unique index — `UNIQUE (migration_id) WHERE status =
+'applied'` — so a migration may legitimately appear twice after a failed attempt and a
+retry, but can never be applied twice.
+
+**Q: Are migrations atomic?**
+A: Usually, and I'm careful not to overclaim. Postgres has transactional DDL, so all
+transactional steps run in one transaction — a failure on step 3 rolls back steps 1 and
+2. There's a test that asserts exactly that: a plan whose last step references a
+nonexistent type leaves none of the earlier columns behind.
+
+The exception is `CREATE INDEX CONCURRENTLY`, which **cannot run inside a transaction
+block** — verified, not assumed:
+
+```
+BEGIN; CREATE INDEX CONCURRENTLY ...;
+ERROR:  CREATE INDEX CONCURRENTLY cannot run inside a transaction block
+```
+
+So a plan containing one genuinely isn't atomic, and the plan says so
+(`atomic: false`) plus a note explaining that a later failure leaves earlier steps
+applied. Claiming atomicity that doesn't hold would be the worst kind of wrong.
+
+**Q: What does the dry run actually do?**
+A: Executes every transactional step for real inside a transaction that is always rolled
+back. That catches what static analysis cannot: a type that doesn't exist, a constraint
+existing data violates, an index on a column never added. Those are precisely the
+failures that would otherwise surface halfway through a real apply with earlier steps
+already committed. There's a test asserting the dry run leaves no trace — if the rollback
+were incomplete, `plan` would silently become `apply`.
+
+**Q: Tell me about a bug you found in this phase.**
+A: The best one: **the migration engine dropped its own ledger table.** With
+`allow_drops=true` and a target that — quite reasonably — didn't mention
+`pgops_migrations`, the diff decided that table was unwanted and emitted
+`DROP TABLE pgops_migrations`. The migration destroyed the table recording it, then
+crashed with `relation "pgops_migrations" does not exist` while trying to mark itself
+finished.
+
+I found it because a test failed with that error, which is a nice illustration of why the
+integration tests run against real Postgres — no mock would have modelled a table
+deleting its own bookkeeping. Fix: internal tables are excluded from the diff entirely
+and refused if named as a target.
+
+Second one, subtler: `ADD CONSTRAINT c CHECK (...)` was being classified as
+`metadata_only`. My pattern for "ADD `<name>` `<type>`" — which exists because the
+`COLUMN` keyword is optional in `ALTER TABLE ... ADD` — happily matched `ADD CONSTRAINT
+c CHECK`, so a full-table validation scan was reported as a harmless catalog change.
+Constraint clauses are now matched before the column branch. The lesson is that a
+permissive fallback pattern will eventually swallow something specific, so specific cases
+have to be ordered first.
+
+**Q: You mentioned a timing bug. What was it?**
+A: Every duration the project reported was wrong on Windows, and it went unnoticed for
+three phases. `time.monotonic()` there is backed by the system tick counter with
+**15.625 ms resolution**:
+
+```
+monotonic    resolution 0.015625 s -> measured a 10 ms sleep as   0.000 ms
+perf_counter resolution 1e-07    s -> measured a 10 ms sleep as  10.470 ms
+```
+
+Most healthy operations finish inside one tick, so they were logged as `0.0`. I caught it
+in the migration ledger, where a row recorded `duration_ms = 0` while its own
+`started_at`/`finished_at` timestamps were 9.8 ms apart — the row disagreed with itself,
+which is what made it obvious rather than merely plausible.
+
+That's not cosmetic: `duration_ms` in the audit log is forensic data. "How long did that
+`DELETE` hold its locks?" is a question an incident review asks, and `0.0` is wrong in a
+way that reads as broken instrumentation. All four measurement sites now use
+`perf_counter`; verified afterwards as `duration_ms 18.238` against wall-clock `18.031`.
+
+`monotonic` is still correct for the confirmation-token TTL — a 5-minute deadline doesn't
+care about 15 ms, and "has this expired" is exactly what monotonic is for.
+
+**Q: Why no `migration.rollback` yet?**
+A: Deliberately deferred rather than half-built. The ledger stores the applied steps, so
+the mechanism is there, but PRD FR-3 requires generating a down-migration *and refusing
+with an explanation when it would lose data irrecoverably*. A rollback that silently
+drops the data it can't restore is worse than no rollback at all — the user believes they
+undid something. That honest-refusal path is the actual work, and it's listed in flow.md
+as the next item rather than quietly claimed as done.
 
 ## Section 6: Phase 5 — Docker layer (populate as you build)
 

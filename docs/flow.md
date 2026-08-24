@@ -5,6 +5,99 @@
 
 ---
 
+## 2026-08-24 · Phase 4 — Migration engine ⭐
+
+Built against verified Postgres 16 behaviour, not recalled documentation. Probes run
+first, then the code written to match:
+
+```
+CREATE INDEX CONCURRENTLY inside BEGIN  -> ERROR: cannot run inside a transaction block
+ADD COLUMN b int NOT NULL DEFAULT 7     -> relfilenode UNCHANGED  (no rewrite)
+ALTER COLUMN a TYPE bigint              -> relfilenode CHANGED    (full rewrite)
+ADD COLUMN c int DEFAULT (random())     -> relfilenode CHANGED    (full rewrite)
+```
+
+- **PHASE-4:** `migrations/lock_analysis.py` — the differentiator. The key insight the
+  module is built on: **all three ALTERs above take `AccessExclusiveLock`, so lock mode
+  alone tells you almost nothing.** What separates a non-event from an outage is whether
+  the operation *rewrites or scans* while holding it. Hence the constant-vs-volatile
+  DEFAULT split — near-identical SQL, differing by a full table rewrite.
+- **PHASE-4:** Risk is duration × *what is blocked*, not duration alone: the "high"
+  threshold is 1s when reads are blocked and 5s when only writes are. Ranking them the
+  same would either cry wolf about index builds or wave through a real outage.
+- **PHASE-4:** Estimate rates calibrated by measurement (rewrite ~500k rows/s, index
+  build ~650k rows/s on this machine) then **halved** — for a safety tool the dangerous
+  direction to be wrong in is optimistic. Nothing that scales with table size may claim
+  `high` confidence, since the rate depends on hardware we cannot see (ADR-004).
+- **PHASE-4:** `migrations/diff.py` — target schema as JSON, not DDL: describing desired
+  state is far less error-prone for an agent than writing migration SQL, and it lets the
+  engine own ordering. Creations run outside-in (tables → columns → constraints →
+  indexes), drops strictly in reverse. Type aliases are normalized (`int`/`integer`,
+  `varchar`/`character varying`) because a raw string compare would emit a spurious
+  `ALTER TYPE` — a full rewrite — for two identical types.
+- **PHASE-4:** `allow_drops` defaults to **false**. A target that merely omits a table is
+  far more likely to be a partial description than a request to destroy it.
+- **PHASE-4:** `migrations/ledger.py` — the row is written `in_flight` **before** the DDL
+  runs, not after. A ledger that inserts on success leaves no trace of a process killed
+  mid-migration, and cannot distinguish "never started" from "half applied". A partial
+  unique index allows retry-after-failure while making double-apply impossible.
+- **PHASE-4:** `tools/migrations.py` — `plan` dry-runs every transactional step inside a
+  doomed transaction, catching what static analysis cannot (a type that doesn't exist, a
+  constraint existing data violates). Non-transactional steps (`CONCURRENTLY`) are
+  reported as making the plan **not atomic** rather than letting the caller assume a
+  guarantee that doesn't hold.
+
+### Bugs found and fixed during Phase 4
+
+- **The engine dropped its own ledger.** With `allow_drops=true` and a target that
+  (reasonably) didn't mention it, the diff emitted `DROP TABLE pgops_migrations` — the
+  migration destroyed the table recording it, then crashed with
+  `relation "pgops_migrations" does not exist` while marking itself finished. Internal
+  tables are now excluded from the diff and refused as a target.
+- **`ADD CONSTRAINT` was misreported as a harmless column add.** The permissive
+  "ADD `<name>` `<type>`" pattern (needed because the `COLUMN` keyword is optional)
+  swallowed `ADD CONSTRAINT c CHECK (...)`, hiding a full-table validation scan behind a
+  `metadata_only` verdict. Constraint clauses are now matched first.
+- **Every duration this project reports was wrong on Windows.** `time.monotonic()` has
+  15.625 ms resolution there — it measures a 10 ms sleep as `0.000 ms`. Caught in the
+  ledger, which stored `duration_ms = 0` for a migration whose own timestamps were
+  9.8 ms apart: the row disagreed with itself. `duration_ms` is forensic data in the
+  audit log, so this was a real defect, not cosmetic. All four measurement sites now use
+  `perf_counter` via `timing.py`; verified `duration_ms 18.238` against wall `18.031`.
+
+### Gate evidence
+
+```
+uv run pytest -q      # 243 passed
+uv run ruff check .   # All checks passed!
+uv run mypy src       # Success: no issues found in 23 source files
+```
+
+SPEC gate — "add column + change type on a large table: plan flags the type change as
+high-lock-risk with reasoning and suggests the safe multi-step pattern". On the live
+1.2M-row `orders`:
+
+```
+plan_id=beRpo3j8CtAxNKpr atomic=True highest_risk=high dry_run_ok=True
+
+  ALTER TABLE "orders" ADD COLUMN "note" text
+    op=metadata_only  risk=low   estimate=1ms     confidence=high
+    why: PG11+ does not rewrite the table for a non-volatile default...
+
+  ALTER TABLE "orders" ALTER COLUMN "total_cents" TYPE bigint
+    op=table_rewrite  risk=high  estimate=4800ms  confidence=medium
+    why: rewrites every row and rebuilds every index, holding AccessExclusiveLock...
+    SAFER: Add a new column of the target type, backfill in batches, sync with a
+           trigger, swap the names, then drop the old column.
+```
+
+Apply / ledger / gating verified live: safe change applied and recorded; a 7-step
+destructive plan refused with `CONFIRMATION_REQUIRED` naming the actual data loss
+(`orders.customer_id holds data that a down-migration cannot restore`); 1,200,000 rows
+untouched after refusal; ledger history clean with `in_flight: []`.
+
+---
+
 ## 2026-08-24 · Phase 3 — Explain & performance brain
 
 - **PHASE-3:** `plan_analysis.py` — pure functions over `EXPLAIN (FORMAT JSON)` output,
@@ -313,8 +406,12 @@ uv run pytest -q      # 1 passed
 
 ## Next up
 
-- [ ] Phase 4 ⭐: migration engine — `schema.diff`, lock-impact analysis,
-      `migration.plan/apply/rollback` with a versioned ledger
+- [ ] Phase 5: Docker environment layer — `env.topology`, `container.logs/stats`,
+      correlation hints; `container.restart/exec` double-gated behind `--approval-mode`
+- [ ] `migration.rollback` — the ledger stores the applied steps, but generated
+      down-migrations are not implemented yet. Deliberately deferred rather than
+      half-built: a rollback that silently loses data is worse than none, so it needs
+      the honest-refusal path (PRD FR-3) done properly.
 - [ ] Known gap to close: classifier can't see writes inside volatile functions
       (`SELECT my_func()`); needs a `pg_proc.provolatile` catalog lookup. Currently
       caught only by the read-only pool at execution time (ADR-001).
