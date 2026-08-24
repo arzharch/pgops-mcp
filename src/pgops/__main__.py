@@ -16,6 +16,8 @@ from pgops.config import PgopsConfig
 from pgops.connections import ConnectionManager
 from pgops.errors import PgopsError, tool_boundary
 from pgops.guardrails import ConfirmationTokenStore
+from pgops.tools.advisor import index_advise
+from pgops.tools.explain import query_explain
 from pgops.tools.health import db_health
 from pgops.tools.query import query_read
 from pgops.tools.schema import Level, schema_inspect
@@ -89,6 +91,41 @@ def build_server(config: PgopsConfig, conn_manager: ConnectionManager) -> FastMC
                 timeout_ms=timeout_ms,
             )
             return result.to_dict()
+
+    @mcp.tool(name="query.explain")
+    @tool_boundary
+    async def query_explain_tool(
+        sql: str,
+        analyze: bool = False,
+        confirm_token: str | None = None,
+        timeout_ms: int | None = None,
+    ) -> dict[str, Any]:
+        """Explain a statement and return the plan plus actionable verdicts.
+
+        analyze=false (default) plans without executing — always safe. analyze=true
+        executes the statement to collect real timings; for a mutating statement that
+        runs inside a transaction which is always rolled back, and requires the same
+        confirmation token as query.write.
+        """
+        result = await query_explain(
+            conn_manager,
+            config,
+            audit,
+            tokens,
+            sql,
+            analyze=analyze,
+            confirm_token=confirm_token,
+            timeout_ms=timeout_ms,
+        )
+        return result.to_dict()
+
+    @mcp.tool(name="index.advise")
+    @tool_boundary
+    async def index_advise_tool(limit: int = 10) -> dict[str, Any]:
+        """Index recommendations: unused indexes, redundant indexes, sequential-scan
+        hotspots, and the slowest statements by total time."""
+        advice = await index_advise(conn_manager, limit=limit)
+        return advice.to_dict()
 
     @mcp.tool(name="db.health")
     @tool_boundary
