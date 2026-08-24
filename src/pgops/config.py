@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from pgops.errors import ErrorCode, PgopsError
 
@@ -89,18 +90,38 @@ class PoolSizing:
     )
 
 
+def _default_audit_path() -> Path:
+    raw = os.environ.get("PGOPS_AUDIT_LOG")
+    if raw:
+        return Path(raw).expanduser()
+    # Under the home directory, not the CWD: an MCP server is launched by the client
+    # (Claude Desktop, Cursor) with a working directory the user never chose and may
+    # not be able to find again. The audit trail has to live somewhere predictable.
+    return Path.home() / ".pgops" / "audit.jsonl"
+
+
 @dataclass(slots=True)
 class PgopsConfig:
     dsn: str
     readonly_dsn: str | None = None
     read_only: bool = False
     approval_mode: bool = False
+    audit_path: Path = field(default_factory=_default_audit_path)
+    confirm_token_ttl_s: int = field(
+        default_factory=lambda: _int_env("PGOPS_CONFIRM_TOKEN_TTL_S", 300)
+    )
     timeouts: TimeoutTiers = field(default_factory=TimeoutTiers)
     row_limits: RowLimits = field(default_factory=RowLimits)
     pools: PoolSizing = field(default_factory=PoolSizing)
 
     @classmethod
-    def from_env(cls, *, dsn: str | None = None, read_only: bool | None = None) -> PgopsConfig:
+    def from_env(
+        cls,
+        *,
+        dsn: str | None = None,
+        read_only: bool | None = None,
+        audit_path: Path | None = None,
+    ) -> PgopsConfig:
         resolved_dsn = dsn or os.environ.get("PGOPS_DSN")
         if not resolved_dsn:
             raise PgopsError(
@@ -108,9 +129,13 @@ class PgopsConfig:
                 "no Postgres DSN provided",
                 hint="set PGOPS_DSN or pass --dsn",
             )
+        kwargs: dict[str, object] = {}
+        if audit_path is not None:
+            kwargs["audit_path"] = audit_path
         return cls(
             dsn=resolved_dsn,
             readonly_dsn=os.environ.get("PGOPS_READONLY_DSN"),
             read_only=read_only if read_only is not None else _bool_env("PGOPS_READ_ONLY", False),
             approval_mode=_bool_env("PGOPS_APPROVAL_MODE", False),
+            **kwargs,  # type: ignore[arg-type]
         )

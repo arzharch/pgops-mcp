@@ -6,16 +6,20 @@ import argparse
 import asyncio
 import logging
 import sys
+from pathlib import Path
 from typing import Any
 
 from fastmcp import FastMCP
 
+from pgops.audit import AuditLog
 from pgops.config import PgopsConfig
 from pgops.connections import ConnectionManager
 from pgops.errors import PgopsError, tool_boundary
+from pgops.guardrails import ConfirmationTokenStore
 from pgops.tools.health import db_health
 from pgops.tools.query import query_read
 from pgops.tools.schema import Level, schema_inspect
+from pgops.tools.write import query_write
 
 
 def configure_logging(level: int = logging.INFO) -> None:
@@ -38,6 +42,8 @@ def configure_logging(level: int = logging.INFO) -> None:
 
 def build_server(config: PgopsConfig, conn_manager: ConnectionManager) -> FastMCP:
     mcp: FastMCP = FastMCP("pgops-mcp")
+    audit = AuditLog(config.audit_path)
+    tokens = ConfirmationTokenStore(ttl_s=config.confirm_token_ttl_s)
 
     # Tool names match docs/TOOLS.md exactly. FastMCP would otherwise derive the name
     # from the Python function, which is a private implementation detail — the tool
@@ -60,6 +66,30 @@ def build_server(config: PgopsConfig, conn_manager: ConnectionManager) -> FastMC
         result = await query_read(conn_manager, config, sql, limit=limit, timeout_ms=timeout_ms)
         return result.to_dict()
 
+    if not config.read_only:
+
+        @mcp.tool(name="query.write")
+        @tool_boundary
+        async def query_write_tool(
+            sql: str, confirm_token: str | None = None, timeout_ms: int | None = None
+        ) -> dict[str, Any]:
+            """Execute a mutating statement (INSERT/UPDATE/DELETE/DDL).
+
+            Destructive statements and unbounded UPDATE/DELETE are refused on the first
+            call and return a confirmation token; call again with that token to execute.
+            Relay the refusal reason to the user before doing so.
+            """
+            result = await query_write(
+                conn_manager,
+                config,
+                audit,
+                tokens,
+                sql,
+                confirm_token=confirm_token,
+                timeout_ms=timeout_ms,
+            )
+            return result.to_dict()
+
     @mcp.tool(name="db.health")
     @tool_boundary
     async def db_health_tool() -> dict[str, Any]:
@@ -75,6 +105,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="pgops-mcp")
     parser.add_argument("--dsn", default=None, help="Postgres DSN (overrides PGOPS_DSN)")
     parser.add_argument("--read-only", action="store_true", default=None, help="disable write tools")
+    parser.add_argument(
+        "--audit-log", default=None, help="path to the JSONL audit log (default ~/.pgops/audit.jsonl)"
+    )
     parser.add_argument(
         "--selfcheck",
         action="store_true",
@@ -102,7 +135,11 @@ def main() -> None:
     args = parse_args()
     configure_logging(logging.DEBUG if args.verbose else logging.INFO)
     try:
-        config = PgopsConfig.from_env(dsn=args.dsn, read_only=args.read_only)
+        config = PgopsConfig.from_env(
+            dsn=args.dsn,
+            read_only=args.read_only,
+            audit_path=Path(args.audit_log) if args.audit_log else None,
+        )
     except PgopsError as exc:
         print(f"pgops-mcp: {exc.to_dict()}", file=sys.stderr)
         raise SystemExit(1) from exc
