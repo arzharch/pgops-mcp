@@ -38,6 +38,26 @@ ORDER BY n_dead_tup DESC
 LIMIT 10
 """
 
+# Table bloat estimate. There is no exact bloat figure available without scanning every
+# page (pgstattuple does that, but it is an extension and it is expensive on a large
+# table). This compares the live tuple count × average row width against the actual
+# relation size — the standard cheap approximation, accurate enough to rank tables and
+# explicitly labelled an estimate in the output.
+_BLOAT_SQL = """
+SELECT
+    c.relname AS table_name,
+    pg_relation_size(c.oid) AS actual_bytes,
+    (c.reltuples * (SELECT sum(avg_width) FROM pg_stats s
+                    WHERE s.schemaname = 'public' AND s.tablename = c.relname))::bigint
+        AS estimated_live_bytes
+FROM pg_class c
+JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE c.relkind = 'r'
+  AND n.nspname = 'public'
+  AND c.reltuples > 1000
+  AND pg_relation_size(c.oid) > 1024 * 1024
+"""
+
 _LONG_RUNNING_SQL = """
 SELECT pid, now() - query_start AS duration, state, left(query, 200) AS query
 FROM pg_stat_activity
@@ -124,6 +144,33 @@ async def db_health(conn_manager: ConnectionManager) -> HealthReport:
                     # serialize_record, not dict(): dead_pct is a Postgres numeric and
                     # arrives as a Decimal, which json.dumps cannot encode.
                     [serialize_record(r) for r in dead],
+                )
+            )
+
+        for row in await conn.fetch(_BLOAT_SQL):
+            live = row["estimated_live_bytes"]
+            actual = row["actual_bytes"]
+            if not live or live <= 0 or actual <= live:
+                continue
+            wasted = actual - live
+            waste_pct = wasted / actual
+            # 30% is where a VACUUM FULL / pg_repack starts being worth its disruption.
+            if waste_pct < 0.30:
+                continue
+            findings.append(
+                Finding(
+                    "bloat",
+                    "warning" if waste_pct < 0.5 else "critical",
+                    f"{row['table_name']} is roughly {waste_pct:.0%} bloat "
+                    f"(~{wasted // (1024 * 1024)} MB reclaimable) — estimate, not exact",
+                    {
+                        "table": row["table_name"],
+                        "actual_bytes": actual,
+                        "estimated_live_bytes": live,
+                        "estimated_waste_pct": round(waste_pct * 100, 1),
+                        "note": "estimated from reltuples × avg row width; confirm with "
+                        "pgstattuple before acting",
+                    },
                 )
             )
 
