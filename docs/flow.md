@@ -5,6 +5,94 @@
 
 ---
 
+## 2026-08-24 · Phase 5 — Docker environment layer
+
+Two concerns drove this phase, neither of them about Docker features.
+
+- **PHASE-5 · security: container metadata is full of secrets.** Probing the dev stack
+  before writing any code, `container.attrs['Config']['Env']` returned
+  `POSTGRES_PASSWORD=pgops_dev` verbatim — and on a real machine that field holds API
+  keys and signing secrets for every other container. A topology tool that returns raw
+  attributes hands all of it to the agent, into its context window, and onward into
+  whatever logs that context reaches. `env.topology` therefore builds an **allowlist**
+  of fields to return rather than filtering a denylist out of the raw attrs: with a
+  denylist, the next Docker API version that adds a secret-bearing field leaks it by
+  default. Mount *destinations* only are returned; source paths leak host layout.
+- **PHASE-5 · security: the Docker socket is root-equivalent.** Anything that can talk
+  to it can mount the host filesystem into a privileged container. Default posture is
+  read-only (list/inspect/logs/stats). `container.restart` and `container.exec` are
+  gated twice — the server must run with `--approval-mode` AND the call needs a
+  confirmation token — and are not even *registered* as tools without the flag, so an
+  agent is never told they exist.
+- **PHASE-5 · `container.exec` is a third gate: a command allowlist.** Even behind two
+  gates, an arbitrary shell is a different class of capability from container
+  diagnostics. Only read-only diagnostic commands (`ps`, `df`, `pg_isready`, …) are
+  permitted; the binary is checked by basename so `/bin/bash` cannot slip past a name
+  check. An operator who genuinely needs a shell already has `docker exec`.
+- **PHASE-5:** DSN→container matching is by **published host port**, not image name.
+  This machine runs two Postgres containers at once — ours on 5433 and an unrelated
+  project's on 5434. Matching on "the image is postgres" would confidently pick the
+  wrong one and then report another project's logs as our database's.
+- **PHASE-5:** Every Docker SDK call goes through `asyncio.to_thread`. The SDK is
+  synchronous and `stats(stream=False)` blocks for ~1 second (it samples twice to
+  compute a CPU delta), which would otherwise freeze the event loop for every other
+  request.
+- **PHASE-5:** Memory is reported the way `docker stats` computes it — usage minus
+  `inactive_file` — because inactive page cache is reclaimable and not really "used".
+  Reporting the raw figure would overstate pressure, fire the correlation hints falsely,
+  and disagree with what the user sees in their own terminal.
+- **PHASE-5:** `env.correlate` joins `db.health` findings with container stats and is
+  deliberately narrow. Hints are phrased "consistent with", never as diagnoses:
+  correlation between a cache-hit dip and memory pressure is suggestive, and a tool
+  that states it as fact sends someone resizing a container when the real cause was a
+  missing index. It also stays quiet when nothing is wrong — a hint on every call is
+  noise, and silence has to mean something.
+- **PHASE-5:** Docker being unavailable degrades this tool group only, with a
+  structured `DOCKER_UNAVAILABLE` error; the database tools are unaffected
+  (ARCHITECTURE.md failure modes).
+
+### Test-quality note
+
+The secret-leak test initially failed on a **safe** response: the dev password
+`pgops_dev` is a substring of the container *name* `pgops_dev_postgres`, so a naive
+`password not in output` check cried wolf about its own fixture. Rewritten to assert on
+the leak's actual signature (the `KEY=value` assignment form), plus a positive assertion
+that the daemon really is offering the secret — so the test cannot quietly start passing
+because a field moved. A test that false-alarms gets weakened or deleted later, which is
+how the real guarantee gets lost.
+
+### Gate evidence
+
+```
+uv run pytest -q      # 268 passed
+uv run ruff check .   # All checks passed!
+uv run mypy src       # Success: no issues found in 24 source files
+```
+
+Live dev compose stack:
+
+```
+dsn_host_port: 5433
+database_container: pgops_dev_postgres | health: healthy
+compose_projects: {'pgops-mcp': 1, 'appointment': 1}
+postgres containers seen: ['pgops_dev_postgres', 'appointment-langfuse-db-1']   <- picked the right one
+stats: cpu 0.0%  memory 176283648 / 3950202880 (4.46%)
+logs: scanned 89, returned 48 at min_severity=LOG
+correlate: "no container resource pressure that would explain database symptoms"
+```
+
+Gates, verified end to end:
+
+```
+without --approval-mode:  container.restart / container.exec are NOT registered at all
+with    --approval-mode:  restart      -> CONFIRMATION_REQUIRED ("drops every open connection")
+                          token reuse  -> CONFIRMATION_MISMATCH (bound to one container)
+                          exec /bin/bash -> EXEC_NOT_ALLOWED ('bash' not in allowlist)
+                          exec pg_isready + token -> exit 0, "accepting connections"
+```
+
+---
+
 ## 2026-08-24 · Phase 4 — Migration engine ⭐
 
 Built against verified Postgres 16 behaviour, not recalled documentation. Probes run
@@ -406,8 +494,8 @@ uv run pytest -q      # 1 passed
 
 ## Next up
 
-- [ ] Phase 5: Docker environment layer — `env.topology`, `container.logs/stats`,
-      correlation hints; `container.restart/exec` double-gated behind `--approval-mode`
+- [ ] Phase 6: packaging & distribution — PyPI, Smithery manifest, official MCP registry,
+      README quickstart verified on a clean machine, demo recording
 - [ ] `migration.rollback` — the ledger stores the applied steps, but generated
       down-migrations are not implemented yet. Deliberately deferred rather than
       half-built: a rollback that silently loses data is worse than none, so it needs

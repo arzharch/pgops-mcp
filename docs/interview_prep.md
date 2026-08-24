@@ -705,7 +705,121 @@ drops the data it can't restore is worse than no rollback at all — the user be
 undid something. That honest-refusal path is the actual work, and it's listed in flow.md
 as the next item rather than quietly claimed as done.
 
-## Section 6: Phase 5 — Docker layer (populate as you build)
+## Section 6: Phase 5 — Docker layer
 
 **Q: Isn't giving agents Docker access dangerous?**
-A: (to fill — read-only API default; restart/exec double-gated: server flag AND token)
+A: Yes — genuinely, not rhetorically. **The Docker socket is root-equivalent on the
+host.** Anything that can talk to it can start a privileged container with the host
+filesystem mounted, and it owns the machine. That is not a Docker misconfiguration, it's
+what the socket is for.
+
+So the default posture is read-only: list, inspect, logs, stats. `container.restart` and
+`container.exec` are gated twice — the server must run with `--approval-mode` AND the
+call needs a confirmation token. The two gates mean different things: the flag is the
+*operator* saying "this deployment may act on containers", the token is a *human*
+approving this specific action. Neither alone is enough.
+
+One design detail I'd point at: without the flag those tools aren't registered at all —
+they're absent from `list_tools()`. An agent can't be tempted by, or waste turns on, a
+capability it was never told exists.
+
+**Q: You allow `container.exec`. Isn't that just remote code execution?**
+A: It would be, which is why there's a third gate: a command allowlist. Only read-only
+diagnostics (`ps`, `df`, `free`, `pg_isready`, `psql`, …) are permitted; a shell is
+refused:
+
+```
+container.exec ['/bin/bash', '-c', 'id']  ->  EXEC_NOT_ALLOWED: 'bash' is not in the
+                                              diagnostic command allowlist
+```
+
+The binary is checked by **basename**, so `/bin/bash` can't slip past a check on the
+literal string `bash`. My reasoning: even behind two gates, handing an agent an arbitrary
+shell is a different class of capability from container diagnostics, and an operator who
+genuinely needs a shell already has `docker exec`. The tool refusing to be the most
+dangerous version of itself costs almost nothing and removes a whole category of risk.
+
+**Q: What's the most important line of code in that module?**
+A: The one that isn't there. Before writing anything I probed the daemon, and
+`container.attrs['Config']['Env']` came back with:
+
+```
+POSTGRES_PASSWORD=pgops_dev
+```
+
+Environment variables are where credentials live — database passwords, API keys, signing
+secrets, for *every* container on the box. A topology tool that returns raw container
+attributes hands all of that to the agent, into its context window, and onward into
+whatever logs or transcripts that context reaches.
+
+So `env.topology` returns an explicit **allowlist** of fields — name, image, status,
+health, compose project/service, ports, mount destinations — rather than filtering a
+denylist out of the raw attrs. That distinction matters: with a denylist, the next Docker
+API version that adds a secret-bearing field leaks it by default. With an allowlist, new
+fields are invisible until someone deliberately adds them. I also return mount
+*destinations* only, since source paths leak host filesystem layout.
+
+**Q: How do you know which container is the database?**
+A: By **published host port**, matched against the DSN — not by image name. This is one
+of those things where the naive version works on a clean machine and fails on a real one.
+My dev box runs two Postgres containers simultaneously: mine on host port 5433 and an
+unrelated project's on 5434. "Find the container whose image is postgres" would
+confidently pick whichever came back first and then report *another project's* logs and
+memory pressure as my database's — wrong in a way that looks authoritative.
+
+If nothing matches, the response says so and explains why (the database may be outside
+Docker, on another host, or on an unpublished port) rather than silently returning null.
+
+**Q: Any async gotchas?**
+A: One that matters. The Docker SDK is **synchronous**, and `stats(stream=False)` blocks
+for about a second — it has to sample twice to compute a CPU delta, since a single
+reading has no previous value to compare against. Calling that directly from an async
+tool would freeze the event loop for every other in-flight request for that whole second.
+Every SDK call goes through `asyncio.to_thread`.
+
+**Q: How do you report memory?**
+A: The way `docker stats` does — `usage - inactive_file` — not the raw `usage` figure.
+Inactive page cache is reclaimable and not really "used". Reporting raw usage would
+overstate pressure, fire the correlation hints falsely, and disagree with what the user
+sees in their own terminal, which is the fastest way to lose their trust in every other
+number the tool prints. There's a test asserting my figure tracks Docker's own
+accounting.
+
+**Q: What does the correlation actually do, and how do you avoid overclaiming?**
+A: `env.correlate` joins `db.health` findings with the database container's stats. The
+useful case is: container memory at 94% *and* a degraded buffer cache hit ratio →
+"consistent with Postgres having too little memory to hold the working set".
+
+The phrasing is the design. Every hint says "consistent with", never "the cause is",
+because correlation isn't causation — a tool that states it as fact sends someone
+resizing a container when the real problem was a missing index. It also stays quiet when
+nothing is wrong ("no container resource pressure that would explain database symptoms").
+A hint on every call is noise; silence has to carry information. There's a test asserting
+the quiet case, and one asserting the hedged phrasing.
+
+CPU throttling is the one I'd highlight as genuinely hard to spot otherwise: a container
+hitting its CPU quota slows every query regardless of how well written it is, and nothing
+inside Postgres will tell you that's happening.
+
+**Q: What if Docker isn't running?**
+A: This tool group degrades with a structured `DOCKER_UNAVAILABLE` error and a hint
+("is Docker running, and does this user have access to the socket?"). The database tools
+are entirely unaffected — that's an explicit failure mode in ARCHITECTURE.md. The test
+suite skips the Docker tests rather than failing when there's no daemon, so CI on a
+socketless runner stays green for everything it *can* verify.
+
+**Q: Tell me about a test you had to fix.**
+A: The secret-leak test — the most important assertion in the module — failed on a
+completely **safe** response. I'd written `assert password not in output`, and the dev
+password `pgops_dev` happens to be a substring of the container *name*
+`pgops_dev_postgres`. The code was correct; the test was crying wolf about its own
+fixture.
+
+I rewrote it to assert on the leak's actual signature — the `KEY=value` assignment form
+and the variable name — and added a positive assertion that the daemon really *is*
+offering the secret, so the test can't quietly start passing because a field moved or the
+fixture changed. That second part matters: a security test that passes for the wrong
+reason is worse than no test.
+
+The reason I didn't just loosen the assertion: a test that false-alarms gets weakened or
+deleted by whoever hits it next, and that's how the real guarantee gets lost.

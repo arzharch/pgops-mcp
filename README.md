@@ -23,9 +23,13 @@ makes every action classifiable, confirmable, and auditable.
 | Queries | `query.read`, `query.write` (guarded), `query.explain` (parsed plan + verdict) |
 | Performance | `index.advise`, `db.health` |
 | Migrations | `migration.plan` (dry-run + lock analysis), `migration.apply`, `migration.history` |
-| Environment | `env.topology`, `container.logs`, `container.stats`, `container.restart`* |
+| Environment | `env.topology`, `env.correlate`, `container.logs`, `container.stats` |
+| Gated | `container.restart`*, `container.exec`* |
 
-\* gated behind approval mode.
+\* Not registered at all unless the server runs with `--approval-mode`, and even then
+each call needs a confirmation token. `container.exec` additionally enforces a read-only
+diagnostic command allowlist — it does not offer a shell. The Docker socket is
+root-equivalent on the host, so the default is read-only access.
 
 ## Safety model (the core differentiator)
 
@@ -69,7 +73,7 @@ Add to Claude Desktop:
 
 ## Status
 
-**Phases 0–4 complete** (243 tests, every guardrail, verdict and lock-impact rule proven
+**Phases 0–5 complete** (268 tests, every guardrail, verdict and lock-impact rule proven
 against real Postgres via testcontainers — no mocks — plus an end-to-end suite that
 drives the server as a real MCP subprocess over stdio).
 
@@ -80,7 +84,8 @@ drives the server as a real MCP subprocess over stdio).
 | 2 · Write path + safety | ✅ | `query.write`, guardrails, confirmation tokens, audit log |
 | 3 · Performance brain | ✅ | `query.explain` (plan verdicts), `index.advise` |
 | 4 · Migration engine | ✅ | `migration.plan` (lock analysis + dry run), `apply`, `history` |
-| 5 · Docker layer | next | `env.topology`, `container.logs/stats` |
+| 5 · Docker layer | ✅ | `env.topology`, `env.correlate`, `container.logs/stats/restart/exec` |
+| 6 · Packaging | next | PyPI, Smithery, MCP registry |
 
 `migration.rollback` is deliberately still open — see [`docs/TOOLS.md`](docs/TOOLS.md).
 
