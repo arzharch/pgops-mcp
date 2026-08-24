@@ -83,3 +83,66 @@ def audit(config: PgopsConfig) -> AuditLog:
 @pytest.fixture
 def tokens() -> ConfirmationTokenStore:
     return ConfirmationTokenStore()
+
+
+@pytest_asyncio.fixture(scope="session")
+async def perf_dsn(dsn: str) -> str:
+    """Seeds tables big enough for plan analysis, once per session.
+
+    Phase 3 rules key off absolute row counts (a sequential scan is only a problem on a
+    large table), so these scenarios need real volume — a 250-row fixture would produce
+    a plan where every verdict is correctly silent, proving nothing. 60k rows is enough
+    to trigger seq-scan and sort-spill thresholds while still seeding in ~1s.
+
+    Session-scoped and read-only from tests: the perf tables are never mutated, so no
+    per-test reset is needed and the seeding cost is paid once.
+    """
+    conn = await asyncpg.connect(dsn)
+    try:
+        await conn.execute("DROP TABLE IF EXISTS perf_events, perf_users")
+        await conn.execute(
+            """
+            CREATE TABLE perf_users (
+                id serial PRIMARY KEY,
+                email text NOT NULL,
+                region text NOT NULL
+            )
+            """
+        )
+        # Deliberately NO index on perf_events.status or .created_at — the missing
+        # index IS the scenario. Only user_id is indexed, mirroring dev/init.sql.
+        await conn.execute(
+            """
+            CREATE TABLE perf_events (
+                id serial PRIMARY KEY,
+                user_id integer NOT NULL,
+                status text NOT NULL,
+                payload text NOT NULL,
+                created_at timestamptz NOT NULL
+            )
+            """
+        )
+        await conn.execute(
+            """
+            INSERT INTO perf_users (email, region)
+            SELECT 'user' || i || '@example.com',
+                   (ARRAY['us','eu','apac'])[1 + (i % 3)]
+            FROM generate_series(1, 5000) AS i
+            """
+        )
+        await conn.execute(
+            """
+            INSERT INTO perf_events (user_id, status, payload, created_at)
+            SELECT 1 + (i % 5000),
+                   CASE WHEN i % 10000 = 0 THEN 'rare' ELSE 'common' END,
+                   repeat('x', 100),
+                   now() - ((60000 - i) || ' seconds')::interval
+            FROM generate_series(1, 60000) AS i
+            """
+        )
+        await conn.execute("CREATE INDEX idx_perf_events_user_id ON perf_events (user_id)")
+        await conn.execute("ANALYZE perf_users")
+        await conn.execute("ANALYZE perf_events")
+    finally:
+        await conn.close()
+    return dsn
