@@ -14,11 +14,12 @@ incident review needs.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 import asyncpg
 
+from pgops.approval import ApprovalMethod, request_approval
 from pgops.audit import AuditEntry, AuditLog
 from pgops.classifier import classify
 from pgops.config import PgopsConfig
@@ -58,6 +59,7 @@ async def query_write(
     sql: str,
     confirm_token: str | None = None,
     timeout_ms: int | None = None,
+    ctx: Any = None,
 ) -> QueryWriteResult:
     classification = classify(sql)
 
@@ -69,6 +71,44 @@ async def query_write(
         )
 
     verdict = evaluate(classification, sql)
+    approval_method = "none"
+
+    # Preferred path: ask the human directly via elicitation. The token protocol routes
+    # approval *through the model*, which can relay the reason inaccurately or simply
+    # call again with the token it was just handed. Elicitation puts the question to the
+    # user outside the model's turn, so the model cannot fabricate the answer. If the
+    # client does not support it, fall back to tokens — degraded, but never to
+    # "no approval needed".
+    if not verdict.allowed and confirm_token is None:
+        approval = await request_approval(ctx, f"Execute: {sql}", verdict.reason)
+        if approval.approved:
+            approval_method = approval.method.value
+            audit.record(
+                AuditEntry(
+                    tool="query.write",
+                    sql=sql,
+                    verdict="approved_by_user",
+                    classification=classification.kind.value,
+                    detail=f"{verdict.reason} | approved via {approval.method.value}",
+                )
+            )
+            verdict = replace(verdict, allowed=True)
+        elif approval.method is ApprovalMethod.ELICITATION:
+            # The human was asked and said no. An explicit refusal must not be
+            # convertible into a token the agent can redeem a moment later.
+            audit.record(
+                AuditEntry(
+                    tool="query.write",
+                    sql=sql,
+                    verdict="declined_by_user",
+                    classification=classification.kind.value,
+                    detail=approval.detail,
+                )
+            )
+            raise PgopsError(
+                ErrorCode.CONFIRMATION_DECLINED,
+                f"the user declined this action: {verdict.reason}",
+            )
 
     if not verdict.allowed:
         if confirm_token is None:
@@ -96,6 +136,7 @@ async def query_write(
         # redeem() raises on every failure mode; nothing falls through to execution.
         try:
             tokens.redeem(confirm_token, sql)
+            approval_method = ApprovalMethod.TOKEN.value
         except PgopsError as exc:
             audit.record(
                 AuditEntry(
@@ -155,6 +196,10 @@ async def query_write(
             classification=classification.kind.value,
             duration_ms=round(duration_ms, 2),
             rows_affected=rows,
+            # Record *how* this was approved. "The human was asked directly" and "the
+            # agent presented a token" are different assurances, and an incident review
+            # reconstructing a bad day needs to tell them apart.
+            detail=f"approval={approval_method}" if approval_method != "none" else None,
         )
     )
     return QueryWriteResult(

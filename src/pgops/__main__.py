@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from fastmcp import FastMCP
+from fastmcp import Context, FastMCP
 
 from pgops.audit import AuditLog
 from pgops.config import PgopsConfig
@@ -98,13 +98,17 @@ def build_server(config: PgopsConfig, conn_manager: ConnectionManager) -> FastMC
         @mcp.tool(name="query.write")
         @tool_boundary
         async def query_write_tool(
-            sql: str, confirm_token: str | None = None, timeout_ms: int | None = None
+            sql: str,
+            confirm_token: str | None = None,
+            timeout_ms: int | None = None,
+            ctx: Context | None = None,
         ) -> dict[str, Any]:
             """Execute a mutating statement (INSERT/UPDATE/DELETE/DDL).
 
-            Destructive statements and unbounded UPDATE/DELETE are refused on the first
-            call and return a confirmation token; call again with that token to execute.
-            Relay the refusal reason to the user before doing so.
+            Destructive statements and unbounded UPDATE/DELETE require human approval.
+            Where the client supports elicitation the user is asked directly; otherwise
+            the call is refused with a confirmation token to be re-supplied after you
+            have relayed the reason to the user.
             """
             result = await query_write(
                 conn_manager,
@@ -114,6 +118,7 @@ def build_server(config: PgopsConfig, conn_manager: ConnectionManager) -> FastMC
                 sql,
                 confirm_token=confirm_token,
                 timeout_ms=timeout_ms,
+                ctx=ctx,
             )
             return result.to_dict()
 
