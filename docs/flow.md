@@ -5,6 +5,118 @@
 
 ---
 
+## 2026-08-24 · Phase 2 — Write path + safety architecture
+
+- **PHASE-2:** `guardrails.py`: two independent mechanisms. (1) Unbounded-mutation
+  detection — UPDATE/DELETE with no WHERE is refused. Detected from the sqlparse token
+  stream, not `"where" in sql.lower()`, which would be fooled by
+  `INSERT INTO log VALUES ('where')`, a column named `wherefore`, and
+  `DELETE FROM orders -- WHERE id = 1` (all three are test cases). (2) Confirmation
+  tokens: destructive/unknown statements are refused on first call and return a token.
+- **PHASE-2:** Token binding is the non-obvious part. A token that only means "the user
+  approved something" is forgeable-by-confusion — an agent could get approval for
+  `DELETE FROM staging` and redeem it against `DELETE FROM orders`. Each token is bound
+  to the SHA-256 of the exact statement it was issued for; redeeming against different
+  SQL fails with `CONFIRMATION_MISMATCH` and — deliberately — does *not* consume the
+  token, since the user's real pending approval is still legitimate. Tokens are
+  single-use, TTL-bound (5 min default), minted with `secrets.token_urlsafe` (it's an
+  authorization credential, not a random id), and in-memory only so a restart
+  invalidates every outstanding approval.
+- **PHASE-2:** `audit.py`: append-only JSONL at `~/.pgops/audit.jsonl` (home, not CWD —
+  an MCP server is launched by the client with a working directory the user never
+  chose). Every executed statement *and every refusal* is recorded: a blocked
+  `DELETE FROM orders` is precisely the event an incident review needs, and a naive
+  "log what we ran" design discards it. SQL stored with its SHA-256 so identical
+  statements group without string-matching over embedded literals. An audit write
+  failure logs loudly but never fails the tool call that already succeeded.
+- **PHASE-2:** `tools/write.py` — `query.write`, ordered classify → guardrails → token →
+  execute → audit. The token check sits *after* guardrail evaluation so a token can only
+  unblock an already-identified specific risk; it is not a general "skip safety" flag.
+  Executes inside an explicit transaction with `SET LOCAL statement_timeout`, so a
+  cancelled statement rolls back rather than half-applying.
+- **PHASE-2:** `--read-only` removes `query.write` from the advertised tool list
+  entirely rather than registering it and refusing at call time — an agent cannot be
+  tempted by a tool it was never told exists.
+
+### Gate evidence
+
+```
+uv run pytest -q      # 115 passed
+uv run ruff check .   # All checks passed!
+uv run mypy src       # Success: no issues found in 14 source files
+```
+
+Against the live dev stack (real 1.2M-row `orders` table), driven through the actual
+FastMCP server object:
+
+```
+orders before: 1200000
+REFUSED: CONFIRMATION_REQUIRED | DELETE has no WHERE clause and would affect every row in the table
+orders after refusal: 1200000          <- nothing deleted
+TOKEN REUSE ON DIFFERENT SQL: CONFIRMATION_MISMATCH
+BOUNDED UPDATE: {'rows_affected': 3, 'duration_ms': 110.0, 'audit_id': '...', 'classification': 'write'}
+```
+
+Resulting audit trail — refusal, blocked token-reuse, and execution all captured:
+
+```json
+{"verdict":"refused_pending_confirmation","sql":"DELETE FROM orders","detail":"DELETE has no WHERE clause and would affect every row in the table"}
+{"verdict":"refused_bad_token","sql":"DROP TABLE orders","error_code":"CONFIRMATION_MISMATCH"}
+{"verdict":"executed","sql":"UPDATE orders SET status = 'paid' WHERE id <= 3","rows_affected":3,"duration_ms":110.0}
+```
+
+---
+
+## 2026-08-24 · Phase 1 review — production hardening
+
+Audit of the Phase 1 code before starting Phase 2. Found four real defects, all with
+regression tests now:
+
+- **BUG (transport):** `schema.inspect(level="full")` was broken for every caller.
+  `pg_constraint.contype` is Postgres's internal `"char"` type, which asyncpg decodes to
+  Python `bytes` — `json.dumps` cannot encode it, so the tool failed at the MCP
+  serialization boundary. It went unnoticed because the selfcheck and manual testing
+  both only exercised `level="summary"`. Fixed by expanding `contype` to a readable
+  label in SQL (`primary_key`, `foreign_key`, …) and routing all catalog output through
+  `serialize_value`. `db.health` had the same latent defect (`dead_pct` is a numeric →
+  `Decimal`), and its JSON test passed only because a freshly seeded container has no
+  dead tuples — the test now generates churn first.
+- **BUG (error leakage):** `schema.inspect` passed the table name into `$1::regclass`,
+  which parses its input as an identifier expression — any name needing quoting
+  (`"Order Items"`) raised a raw `InvalidNameError` that escaped the tool layer with a
+  traceback, violating SPEC cross-cutting rule #2. Fixed by keying every catalog query
+  off `pg_class.oid`, removing name parsing entirely.
+- **BUG (error leakage, systemic):** each tool caught only `PgopsError`, which by
+  definition catches only anticipated failures. Added `tool_boundary` — a decorator
+  wrapping every tool that catches `Exception`, logs the full traceback to stderr, and
+  returns a generic `INTERNAL_ERROR` to the caller.
+- **BUG (liveness):** `pool.acquire()` has no default timeout — with every connection
+  held by slow queries, further tool calls hung indefinitely with no error. Added
+  `ConnectionManager.acquire_readonly()` with a bounded wait surfacing
+  `POOL_EXHAUSTED`.
+
+Quality improvements in the same pass:
+
+- **N+1 removed:** `schema.inspect` ran 3 catalog queries *per table* (600 round trips
+  for a 200-table schema at `level="full"`). Now 3 total via `= ANY($1::oid[])`.
+- **Lock detection corrected:** replaced the hand-rolled `pg_locks` self-join with
+  `pg_blocking_pids()`. The self-join is the version that circulates on blogs and is
+  subtly wrong — it misses lock types not identified by locktype/relation (tuple,
+  transactionid, advisory) and reports false positives for non-conflicting modes.
+- **Logging to stderr, explicitly:** under stdio transport stdout *is* the MCP protocol
+  channel; one stray log line corrupts the session in a way that looks like a client bug.
+- **Tool names match docs:** were `schema_inspect_tool` etc. (derived from Python
+  function names); now `schema.inspect`, `query.read`, `db.health` per TOOLS.md. A tool
+  name is a public contract, not an implementation detail.
+- **Test isolation:** the fixture used `TRUNCATE items` without `RESTART IDENTITY`, so
+  re-seeded rows continued from the previous test's id high-water mark and assertions
+  like `WHERE id <= 5` matched a different number of rows depending on test order.
+- Also added: `py.typed` marker, config-resolution tests, and end-to-end tests through
+  the real FastMCP server — the layer where both serialization bugs would have been
+  caught the first time.
+
+---
+
 ## 2026-08-24 · Phase 1 — Connection core + read path
 
 - **PHASE-1:** `ConnectionManager` (`connections.py`): two asyncpg pools per DSN.
@@ -128,6 +240,7 @@ uv run pytest -q      # 1 passed
 
 ## Next up
 
-- [ ] Phase 2: `query.write` + guardrails (unbounded UPDATE/DELETE detection,
-      confirmation-token protocol) + audit log (`audit.py`)
 - [ ] Phase 3: `query.explain` (EXPLAIN plan parser + verdicts), `index.advise`
+- [ ] Known gap to close: classifier can't see writes inside volatile functions
+      (`SELECT my_func()`); needs a `pg_proc.provolatile` catalog lookup. Currently
+      caught only by the read-only pool at execution time (ADR-001).

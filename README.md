@@ -69,4 +69,23 @@ Add to Claude Desktop:
 
 ## Status
 
-Pre-code. Specs complete; implementation starts at Phase 1 of SPEC.md.
+**Phases 0–2 complete** (115 tests, all guardrails proven against real Postgres via
+testcontainers — no mocks).
+
+| Phase | State | Tools |
+|---|---|---|
+| 0 · Bootstrap | ✅ | seeded dev stack (1.2M-row `orders`), CI, lint/type gates |
+| 1 · Connection core + read path | ✅ | `schema.inspect`, `query.read`, `db.health` |
+| 2 · Write path + safety | ✅ | `query.write`, guardrails, confirmation tokens, audit log |
+| 3 · Performance brain | next | `query.explain`, `index.advise` |
+| 4 · Migration engine | planned | `schema.diff`, `migration.plan/apply/rollback` |
+| 5 · Docker layer | planned | `env.topology`, `container.logs/stats` |
+
+Quickstart the dev database (host port **5433**, to avoid colliding with a local
+Postgres on 5432):
+
+```bash
+docker compose up -d
+export PGOPS_DSN="postgresql://pgops:pgops_dev@localhost:5433/pgops_demo"
+uv run pgops-mcp --selfcheck
+```

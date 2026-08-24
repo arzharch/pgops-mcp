@@ -183,15 +183,214 @@ in production vs. on a laptop" maps onto:
 | `PGOPS_DEFAULT_TIMEOUT_MS` (5000) / `PGOPS_MAX_TIMEOUT_MS` (30000) | generous for exploratory queries against a 1.2M-row dev table | production analytical queries against a much larger table may legitimately need a higher `max`, but raising the *ceiling* is a deliberate operator decision (env var), never something a single tool call can override past |
 | `PGOPS_DEFAULT_ROW_LIMIT` (100) / `PGOPS_MAX_ROW_LIMIT` (10000) | keeps an agent from accidentally dumping a huge table into its own context window | production data-export use cases would raise `MAX_ROW_LIMIT`, not remove the cap — the cap is what stops "SELECT * FROM orders" from ever being unbounded, regardless of what the agent asked for |
 | `PGOPS_READONLY_DSN` (unset → falls back to `PGOPS_DSN`) | one shared role is fine locally | production should point this at a real least-privilege Postgres role as a second, independent layer on top of the `default_transaction_read_only` session guarantee |
-| `PGOPS_READ_ONLY` (off) | writes available for local iteration | flip on for a demo environment, a read replica, or handing the server to someone you don't fully trust yet — hard-disables the write pool at the `ConnectionManager` level (`readwrite_pool()` raises before ever calling `asyncpg.create_pool`) |
+| `PGOPS_READ_ONLY` (off) | writes available for local iteration | flip on for a demo environment, a read replica, or handing the server to someone you don't fully trust yet — removes `query.write` from the advertised tool list *and* hard-disables the write pool |
+| `PGOPS_POOL_ACQUIRE_TIMEOUT_MS` (10000) | one agent, contention unlikely | with several clients sharing a pool this is what converts "the agent stopped responding" into a clear `POOL_EXHAUSTED` error; lower it if you'd rather fail fast than queue |
+| `PGOPS_CONFIRM_TOKEN_TTL_S` (300) | 5 min is comfortable for a human to read a reason and decide | shorten it where approvals must be deliberate and immediate; lengthening it widens the window in which an approved-but-unexecuted destructive statement can still fire |
+| `PGOPS_AUDIT_LOG` (`~/.pgops/audit.jsonl`) | per-user local file | point at a directory shipped to your log pipeline; note the write is `fsync`'d per entry, so a network filesystem will slow every write call |
 
-## Section 3: Phase 2 — Safety architecture (populate as you build)
+## Section 3: Phase 2 — Safety architecture
 
 **Q: Walk me through the confirmation token lifecycle.**
-A: (to fill — issuance on refusal, TTL, single-use, binding to statement hash)
+A: Five stages, and the interesting design decision is at stage 3.
+
+1. **Refusal.** `query.write("DELETE FROM orders")` → classifier says WRITE → guardrails
+   see no WHERE clause → refused. A token is minted and returned inside the error hint,
+   along with a human-readable reason. Nothing executed.
+2. **Relay.** The agent shows the user the reason. It cannot mint a token itself, so
+   human approval is structurally required, not politely requested.
+3. **Binding.** The token is bound to `sha256(sql)`:
+
+```python
+def issue(self, sql: str, reason: str) -> str:
+    token = secrets.token_urlsafe(24)
+    self._tokens[token] = _Issued(
+        sql_hash=sql_fingerprint(sql),
+        expires_at=time.monotonic() + self._ttl_s,
+        reason=reason,
+    )
+    return token
+```
+
+   This is the part that matters. A token meaning only "the user approved *something*"
+   is forgeable-by-confusion: an agent could obtain approval for `DELETE FROM staging`
+   and redeem it against `DELETE FROM orders`. Binding to the statement hash makes the
+   approval specific to what was actually shown to the user.
+4. **Redemption.** `redeem(token, sql)` raises on every failure mode and returns `None`
+   on success — deliberately not a boolean, because a caller who forgets to check a
+   boolean fails *open*, while one who ignores an exception cannot. A hash mismatch
+   raises `CONFIRMATION_MISMATCH` and — importantly — does **not** consume the token:
+   the mismatch means this call wasn't the approved one, so the user's real pending
+   approval is still legitimate and must survive.
+5. **Expiry.** Single-use (deleted on successful redeem), 5-minute TTL, in-memory only.
+   In-memory is a deliberate choice: a persisted token would mean approvals survive a
+   restart the user never saw. Losing a token costs one extra confirmation; honoring a
+   stale one costs a table.
+
+`secrets.token_urlsafe`, not `random` or `uuid4()`: this value is an authorization
+credential, and a CSPRNG costs nothing here.
+
+**Q: How do you detect an "unbounded" DELETE? Isn't that just checking for WHERE?**
+A: Checking for WHERE, yes — but *how* you check is the whole thing. The naive version
+is `"where" in sql.lower()`, and it's wrong in three ways that all fail open:
+
+```python
+("INSERT INTO log (msg) VALUES ('where')", False),   # literal containing the word
+("UPDATE orders SET wherefore = 1",         False),   # identifier containing it
+("DELETE FROM orders -- WHERE id = 1",      False),   # commented-out clause
+```
+
+Each of those makes a substring check believe a bounded statement is present. The last
+one is the dangerous one: a real unbounded `DELETE FROM orders` that a substring check
+waves straight through because the word appears in a trailing comment. So detection runs
+over the sqlparse token stream and looks for an actual `Token.Keyword` WHERE — literals,
+identifiers, and comments all carry different token types and can't be confused for it.
+Those exact cases are parametrized tests in `test_guardrails.py`.
 
 **Q: What's in the audit log and how would you use it in an incident?**
-A: (to fill)
+A: Append-only JSONL — timestamp, tool, verdict, classification, SQL, SHA-256 of the
+SQL, duration, rows affected, error code. The design decision worth defending is *what
+gets logged*: every executed statement **and every refusal**. A "log what we ran" design
+would show nothing for a blocked `DELETE FROM orders`, which is exactly the event an
+incident review is looking for. Here's a real trail from the Phase 2 gate run:
+
+```json
+{"verdict":"refused_pending_confirmation","sql":"DELETE FROM orders","detail":"DELETE has no WHERE clause and would affect every row in the table"}
+{"verdict":"refused_bad_token","sql":"DROP TABLE orders","error_code":"CONFIRMATION_MISMATCH"}
+{"verdict":"executed","sql":"UPDATE orders SET status = 'paid' WHERE id <= 3","rows_affected":3,"duration_ms":110.0}
+```
+
+An incident reviewer can reconstruct the whole sequence: something dangerous was
+attempted, it was blocked, someone tried to reuse that approval for a *different*
+destructive statement, that was blocked too, and here's what actually ran and how many
+rows it touched. The SHA-256 lets you group identical statements across records without
+string-matching over SQL that may embed literal values.
+
+**Q: Why JSONL in a file, and not a table in the database you're already connected to?**
+A: Circularity. The audit trail for "who dropped that table" has to survive the database
+being broken — if the log lives in the same Postgres the agent is operating on, the
+statement you most need recorded is the one that can destroy its own record. It also
+must not be writable by the statements it audits. A local file is independent of the
+target's health.
+
+JSONL specifically, over a single JSON array: append-only by construction. No read-modify-
+write step, so an interrupted process can't corrupt the file — worst case the final line
+is torn, and `read_all()` discards that one line and returns everything before it intact
+(there's a test that truncates a line mid-write and asserts the rest still parses). It's
+also greppable with standard tools, which matters at 3am.
+
+**Q: What if the audit write fails?**
+A: It logs loudly at ERROR level and the tool call still succeeds. That's a deliberate
+trade and worth stating explicitly: the alternative — failing the operation because we
+couldn't record it — sounds more rigorous but means a full disk turns into a total
+outage of a tool the user is mid-task with. For a local developer tool that's the wrong
+trade. In a compliance setting where the audit trail is a hard requirement, you'd invert
+it and fail closed; it's one line in `audit.py`.
+
+**Q: Why does `--read-only` remove the write tool instead of refusing calls to it?**
+A: Both are safe, but removing it from `list_tools()` is better: an agent can't be
+tempted by, or waste turns on, a tool it was never told exists. Refusing at call time
+means the model sees a capability advertised, plans around it, tries it, and gets an
+error it then has to recover from. The `ConnectionManager` *also* refuses at the pool
+level (`readwrite_pool()` raises before ever calling `create_pool`), so it's belt and
+suspenders — but the advertised surface is the first line.
+
+## Section 3b: The Phase 1 review — bugs I found in my own code
+
+Good material for "tell me about a bug you found" or "how do you know your code works".
+All four were found by auditing Phase 1 *before* starting Phase 2, and all four now have
+regression tests.
+
+**Q: Tell me about a bug you caught before it shipped.**
+A: `schema.inspect(level="full")` was broken for every caller and my tests were green.
+`pg_constraint.contype` is Postgres's internal `"char"` type, which asyncpg decodes to
+Python `bytes` — a perfectly valid Python object that `json.dumps` cannot encode. Since
+MCP results are JSON, the tool failed at the serialization boundary, not in my code. It
+survived because I'd verified with `--selfcheck` and a manual call, and *both only
+exercised `level="summary"`*, which doesn't touch constraints.
+
+The lesson I actually took from it: I was testing the tool functions directly, which
+skipped the layer where the failure lived. The fix was structural — route all catalog
+output through one `serialize_value` helper, and add tests that call through the real
+FastMCP server object so the JSON encoding boundary is exercised:
+
+```python
+for name, args in calls:
+    result = await server.call_tool(name, args)
+    assert result.is_error is False
+    json.dumps(result.structured_content)
+```
+
+`db.health` had the identical latent bug (`dead_pct` is a Postgres numeric → `Decimal`),
+and its JSON test had been passing only because a freshly seeded container has no dead
+tuples — the branch never ran. That test now generates UPDATE churn first, so the
+assertion actually reaches the code path it claims to cover.
+
+**Q: How do you make sure an internal error never reaches the user?**
+A: Originally each tool had `except PgopsError: return exc.to_dict()`, which by
+construction only catches failures I already anticipated — everything unforeseen
+propagated out with a traceback. I proved it: `schema.inspect(table="Order Items")`
+raised a raw `InvalidNameError` straight through the tool layer. Two fixes:
+
+1. The specific cause — I was passing the table name into `$1::regclass`, which parses
+   its argument as an identifier *expression*, so any name needing quoting blows up.
+   Rather than reimplement Postgres's identifier-quoting rules in Python, I keyed every
+   catalog query off `pg_class.oid` and removed name parsing entirely.
+2. The general class — one `tool_boundary` decorator wrapping every tool, with the catch
+   order inverted: known errors first, then a catch-all that logs the traceback to
+   stderr and returns a generic code.
+
+```python
+except PgopsError as exc:
+    return exc.to_dict()          # expected, actionable, safe to show
+except Exception:
+    logger.exception(...)          # operator sees everything, on stderr
+    return PgopsError(ErrorCode.INTERNAL_ERROR, "internal error; see server logs").to_dict()
+```
+
+There's a test asserting a secret in an exception message (`postgres://user:hunter2@...`)
+does not appear anywhere in the returned payload.
+
+**Q: Any performance work?**
+A: `schema.inspect` was an N+1: three catalog queries per table, so `level="full"` on a
+200-table schema meant 600 round trips, where network latency — not Postgres — dominates
+the response. Collapsed to three total by passing the whole OID array:
+`WHERE a.attrelid = ANY($1::oid[])`, then fanning results back out by `table_oid` in
+Python. Same data, three round trips regardless of schema size.
+
+**Q: Anything you'd flag about how you detect lock contention?**
+A: I originally wrote the `pg_locks` self-join that circulates on blogs — join
+`granted`/`not granted` rows on locktype/database/relation. It's subtly wrong: those
+columns don't identify every lock type (tuple, transactionid, virtualxid, advisory all
+fall through), and it reports false positives for lock modes that don't actually
+conflict. Replaced with `pg_blocking_pids()`, which is Postgres's own answer and consults
+the real lock manager including conflict-mode rules and parallel-worker leaders. Being
+wrong about "who is blocking production right now" is worse than not reporting it.
+
+**Q: What about the stdio transport — any gotchas?**
+A: One that's easy to get wrong and silent when you do: under stdio, **stdout is the MCP
+protocol channel**. The client parses it as a stream of JSON-RPC messages, so a single
+stray log line or `print()` corrupts the stream, and the failure surfaces as what looks
+like a client bug. `logging.StreamHandler` defaults to stderr anyway, but I set it
+explicitly with a comment, because the consequence of a future edit getting it wrong is
+so disproportionate to how obvious the mistake looks.
+
+**Q: What's the weakest part of the system right now?**
+A: The classifier can't see writes inside a volatile function — `SELECT my_func()` where
+`my_func` does an INSERT internally is invisible to any lexer, sqlparse or pglast alike.
+Closing it properly needs a `pg_proc.provolatile` catalog lookup per function reference,
+which is Phase 3+ work. Right now it's caught one layer down: the read-only pool means
+Postgres itself refuses the write at execution time. I verified that empirically rather
+than assuming it — including two cases I expected to slip through and didn't:
+
+```
+SELECT id FROM items LIMIT 1 FOR UPDATE  -> cannot execute SELECT FOR UPDATE in a read-only transaction
+SELECT nextval('items_id_seq')           -> cannot execute nextval() in a read-only transaction
+```
+
+Both are lexically SELECTs with real side effects — row locks that block the application,
+and sequence state that can't be rolled back. That's the clearest evidence I have that
+the layered design is doing real work rather than just sounding good: the layer that
+catches these is not the one designed to.
 
 ## Section 4: Phase 3 — Performance brain (populate as you build)
 
