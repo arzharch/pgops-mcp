@@ -46,20 +46,20 @@ async def conn_manager(config: PgopsConfig) -> AsyncIterator[ConnectionManager]:
     # itself (that refusal is exactly what test_connections.py proves).
     setup_conn = await asyncpg.connect(config.dsn)
     try:
+        # DROP + CREATE, not CREATE IF NOT EXISTS + TRUNCATE. Once migration tests exist,
+        # a test can legitimately ALTER or drop a column of `items`; a fixture that only
+        # resets *rows* would then hand the next test a table with the wrong *shape*
+        # (seeding failed with `column "name" of relation "items" does not exist`).
+        # The fixture has to guarantee the schema, not just the data.
+        await setup_conn.execute("DROP TABLE IF EXISTS items")
         await setup_conn.execute(
             """
-            CREATE TABLE IF NOT EXISTS items (
+            CREATE TABLE items (
                 id serial PRIMARY KEY,
                 name text NOT NULL
             )
             """
         )
-        # RESTART IDENTITY matters: plain TRUNCATE leaves the serial sequence where it
-        # was, so `items` would be re-seeded with ids continuing from the previous
-        # test's high-water mark. Any assertion phrased as `WHERE id <= 5` would then
-        # match a different number of rows depending on which tests ran before it —
-        # test outcomes that depend on execution order are worse than no tests.
-        await setup_conn.execute("TRUNCATE items RESTART IDENTITY")
         await setup_conn.executemany(
             "INSERT INTO items (name) VALUES ($1)",
             [(f"item-{i}",) for i in range(250)],
