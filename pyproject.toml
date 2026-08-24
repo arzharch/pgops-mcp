@@ -36,6 +36,9 @@ module-name = "pgops"
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "slow: spawns the server as a subprocess (stdio transport end-to-end)",
+]
 
 [tool.ruff]
 line-length = 100
