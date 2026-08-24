@@ -10,10 +10,10 @@ import json
 
 import pytest
 
+from pgops.__main__ import build_server
 from pgops.audit import AuditEntry, AuditLog
 from pgops.config import PgopsConfig
 from pgops.connections import ConnectionManager
-from pgops.__main__ import build_server
 
 DOCUMENTED_RESOURCES = {
     "pgops://schema",
