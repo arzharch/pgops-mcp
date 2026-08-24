@@ -85,6 +85,9 @@ def audit_resource(config: PgopsConfig, limit: int = 50) -> str:
         {
             "ts": e.get("ts"),
             "audit_id": e.get("audit_id"),
+            # Identity is the point of the log on a multi-caller deployment, and unlike
+            # SQL text it carries no row data, so it survives redaction.
+            "actor": e.get("actor"),
             "tool": e.get("tool"),
             "verdict": e.get("verdict"),
             "classification": e.get("classification"),

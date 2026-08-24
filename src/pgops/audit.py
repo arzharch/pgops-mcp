@@ -17,6 +17,17 @@ the one a naive "log what we ran" design silently discards.
 The SQL text is stored alongside its SHA-256 hash (TOOLS.md convention): the hash makes
 identical statements groupable and searchable without string-matching over text that
 may contain literal values.
+
+Every entry also records an **actor** — the `sub` claim of the bearer token that made
+the call, or `local` under stdio where there is exactly one caller and identity is
+implicit. Without it an HTTP deployment's log answers "what happened" but not "who did
+it", which is the question an incident review actually opens the file to ask, and the
+whole reason `subject` is a required argument to `issue-token`.
+
+The actor is resolved *inside* `record()` from the active request rather than being
+passed in by each tool. Threading it through every call site would mean a tool that
+forgot the argument silently logs an anonymous entry — a failure that is invisible
+until the day someone needs it.
 """
 
 from __future__ import annotations
@@ -26,12 +37,31 @@ import json
 import logging
 import os
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger("pgops.audit")
+
+UNKNOWN_ACTOR = "unknown"
+
+
+def default_actor() -> str:
+    """Subject of the bearer token behind the current call, or `local` under stdio.
+
+    Imported lazily so `audit` stays usable (and testable) without a FastMCP request
+    context, and so an auth-layer failure can never prevent an audit line from being
+    written — losing the identity is bad, losing the record entirely is worse.
+    """
+    try:
+        from pgops.middleware import current_caller
+
+        return current_caller().subject
+    except Exception:  # never let identity lookup break the audit write
+        logger.debug("actor resolution failed", exc_info=True)
+        return UNKNOWN_ACTOR
 
 
 def sql_fingerprint(sql: str) -> str:
@@ -49,12 +79,14 @@ class AuditEntry:
     error_code: str | None = None
     detail: str | None = None
     audit_id: str = ""
+    actor: str = ""
     ts: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
 
     def to_dict(self) -> dict[str, Any]:
         body: dict[str, Any] = {
             "ts": self.ts,
             "audit_id": self.audit_id,
+            "actor": self.actor,
             "tool": self.tool,
             "verdict": self.verdict,
             "classification": self.classification,
@@ -73,9 +105,10 @@ class AuditEntry:
 
 
 class AuditLog:
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, actor_resolver: Callable[[], str] | None = None) -> None:
         self._path = path
         self._counter = 0
+        self._actor_resolver = actor_resolver or default_actor
 
     @property
     def path(self) -> Path:
@@ -85,6 +118,9 @@ class AuditLog:
         self._counter += 1
         # monotonic-ish id that is unique per process run and readable in a log tail
         entry.audit_id = f"{int(time.time())}-{self._counter:05d}"
+        # An explicitly-set actor wins, so a caller that genuinely knows better than the
+        # request context (a background job, a replayed entry) can say so.
+        entry.actor = entry.actor or self._actor_resolver()
         line = json.dumps(entry.to_dict(), separators=(",", ":"))
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
