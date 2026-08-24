@@ -16,6 +16,22 @@ from pgops.config import PgopsConfig
 from pgops.connections import ConnectionManager
 from pgops.errors import PgopsError, tool_boundary
 from pgops.guardrails import ConfirmationTokenStore
+from pgops.prompts import (
+    diagnose_slow_query,
+    explain_safety_model,
+    incident_triage,
+    plan_safe_migration,
+    review_index_health,
+)
+from pgops.resources import (
+    audit_resource,
+    config_resource,
+    health_resource,
+    migrations_resource,
+    schema_resource,
+    schema_summary_resource,
+    table_resource,
+)
 from pgops.tools.advisor import index_advise
 from pgops.tools.environment import (
     container_exec,
@@ -243,6 +259,75 @@ def build_server(config: PgopsConfig, conn_manager: ConnectionManager) -> FastMC
             return await container_exec(
                 config, audit, tokens, name, command, confirm_token=confirm_token
             )
+
+    # --- resources: application-controlled, read-only context ---------------------
+    # A client can attach these without the model spending a turn on a tool call.
+    # Everything here mirrors data already reachable through tools, so resources add
+    # no capability and no new attack surface.
+
+    @mcp.resource("pgops://schema", mime_type="application/json")
+    async def schema_res() -> str:
+        """Full schema: tables, columns, constraints, indexes, extensions."""
+        return await schema_resource(conn_manager)
+
+    @mcp.resource("pgops://schema/summary", mime_type="application/json")
+    async def schema_summary_res() -> str:
+        """Table names, row estimates and sizes — the cheap version to attach."""
+        return await schema_summary_resource(conn_manager)
+
+    @mcp.resource("pgops://schema/{table}", mime_type="application/json")
+    async def table_res(table: str) -> str:
+        """One table's full definition."""
+        return await table_resource(conn_manager, table)
+
+    @mcp.resource("pgops://health", mime_type="application/json")
+    async def health_res() -> str:
+        """Current health snapshot with severities."""
+        return await health_resource(conn_manager)
+
+    @mcp.resource("pgops://migrations", mime_type="application/json")
+    async def migrations_res() -> str:
+        """Migration ledger history, including interrupted migrations."""
+        return await migrations_resource(conn_manager)
+
+    @mcp.resource("pgops://audit/recent", mime_type="application/json")
+    async def audit_res() -> str:
+        """Recent audit activity — metadata only; SQL text is deliberately omitted."""
+        return audit_resource(config)
+
+    @mcp.resource("pgops://config", mime_type="application/json")
+    async def config_res() -> str:
+        """This server's effective safety configuration (never the DSN)."""
+        return config_resource(config)
+
+    # --- prompts: user-invoked workflows -------------------------------------------
+    # These encode the *order* to use the tools in and what to do with the answers,
+    # which no individual tool can express.
+
+    @mcp.prompt(name="diagnose-slow-query")
+    def diagnose_slow_query_prompt(sql: str) -> str:
+        """Investigate why a query is slow, using evidence rather than guesswork."""
+        return diagnose_slow_query(sql)
+
+    @mcp.prompt(name="plan-safe-migration")
+    def plan_safe_migration_prompt(description: str) -> str:
+        """Plan a schema change for zero downtime, with lock impact reviewed first."""
+        return plan_safe_migration(description)
+
+    @mcp.prompt(name="incident-triage")
+    def incident_triage_prompt() -> str:
+        """Triage a misbehaving database, cheapest and most-likely checks first."""
+        return incident_triage()
+
+    @mcp.prompt(name="review-index-health")
+    def review_index_health_prompt() -> str:
+        """Review indexes, respecting the statistics observation window."""
+        return review_index_health()
+
+    @mcp.prompt(name="explain-safety-model")
+    def explain_safety_model_prompt() -> str:
+        """Explain what this server will and will not permit, and why."""
+        return explain_safety_model()
 
     @mcp.tool(name="db.health")
     @tool_boundary
