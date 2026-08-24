@@ -6,11 +6,16 @@ Conventions:
 - All tools return structured JSON. Errors are objects: `{"error": {"code", "message", "hint"}}`.
 - Destructive tools require `confirm_token` obtained from a prior refusal response.
 - SQL in audit logs is stored alongside its SHA-256 hash.
+- Tool names below are the exact registered names — they are a public contract and do
+  not track the Python function names behind them.
+- No tool ever raises to the client: unexpected failures are caught at the tool boundary
+  and returned as `{"error": {"code": "INTERNAL_ERROR", ...}}` with the traceback sent
+  to the server's stderr log instead.
 
 ---
 
 ## schema.inspect
-**Phase 1 · Role: readonly**
+**Phase 1 ✅ implemented · Role: readonly**
 
 Inspect database structure.
 
@@ -25,7 +30,7 @@ extension list, schema-level stats.
 ---
 
 ## query.read
-**Phase 1 · Role: readonly**
+**Phase 1 ✅ implemented · Role: readonly**
 
 Execute a read-only statement.
 
@@ -41,21 +46,33 @@ Values serialized safely (JSONB, arrays, numerics).
 ---
 
 ## query.write
-**Phase 2 · Role: readwrite + confirmation for destructive**
+**Phase 2 ✅ implemented · Role: readwrite + confirmation for destructive**
 
-Execute a mutating statement.
+Execute a mutating statement. Not registered at all when the server runs with
+`--read-only`.
 
 | Param | Type | Default | Notes |
 |---|---|---|---|
 | sql | str | required | INSERT/UPDATE/DELETE/DDL |
-| confirm_token | str? | null | required iff classified destructive |
+| confirm_token | str? | null | required iff refused on a prior call |
+| timeout_ms | int? | 5000 | tiered cap, server max overrides |
 
 Behavior:
 - INSERT / bounded UPDATE/DELETE → executes immediately
-- UPDATE/DELETE without WHERE, or WHERE on non-indexed column of large table → blocked,
-  returns reason + confirm token
+- UPDATE/DELETE without WHERE → blocked, returns reason + confirm token
 - DROP/TRUNCATE/ALTER ... DROP COLUMN → always destructive class
-- Response: rows affected, duration, audit id
+- Unclassifiable statements (`VACUUM`, `DO $$...$$`, multi-statement) → treated as
+  destructive per ADR-001
+- Response: `{rows_affected, duration_ms, audit_id, classification}`
+
+Confirmation tokens are single-use, expire after 5 minutes, and are bound to the
+SHA-256 of the exact statement they were issued for — redeeming one against different
+SQL fails with `CONFIRMATION_MISMATCH` and does not consume the token.
+
+Every call is audited, including refusals.
+
+Error codes: `CONFIRMATION_REQUIRED`, `INVALID_CONFIRMATION`, `CONFIRMATION_MISMATCH`,
+`READ_ONLY_MODE`, `QUERY_TIMEOUT`, `INVALID_ARGUMENT`, `POOL_EXHAUSTED`.
 
 ---
 
@@ -90,11 +107,12 @@ Returns:
 ---
 
 ## db.health
-**Phase 1 · Role: readonly**
+**Phase 1 ✅ implemented · Role: readonly**
 
 Health snapshot: connection counts by state, cache hit ratio, dead tuples/top bloat
-tables, long-running queries, waiting locks, WAL/stats age. Each finding carries
-severity + plain-language explanation.
+tables, long-running queries (>5s), blocked sessions via `pg_blocking_pids()`. Each
+finding carries `{category, severity, summary, detail}` where severity is one of
+`ok | info | warning | critical`.
 
 ---
 
