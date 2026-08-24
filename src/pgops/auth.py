@@ -69,6 +69,7 @@ TOOL_SCOPES: dict[str, Scope] = {
     "container.stats": Scope.READ,
     "query.write": Scope.WRITE,
     "migration.apply": Scope.WRITE,
+    "migration.rollback": Scope.WRITE,
     "container.restart": Scope.ADMIN,
     "container.exec": Scope.ADMIN,
 }

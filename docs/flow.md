@@ -5,6 +5,61 @@
 
 ---
 
+## 2026-08-25 · Phase 4c — migration.rollback
+
+The last tool from FR-3, and deliberately the last: "rollback" sounds like an undo
+button, and for schema migrations it is not one. The naive version is dangerous in a way
+that is easy to miss — a tool that implies reversibility will eventually be trusted at
+3am to reverse something that cannot be reversed.
+
+- **PHASE-4c · three outcomes, not two.** Each recorded step is classified:
+  *reversible* (`CREATE INDEX` → `DROP INDEX` — an index is derived data),
+  *reversible-with-data-loss* (`ADD COLUMN` → `DROP COLUMN` — schema reverts, every
+  value written since is destroyed), *irreversible* (`DROP COLUMN`, `DROP TABLE`,
+  type changes with no recorded previous type). **Any irreversible step refuses the
+  whole rollback** — doing the reversible half would leave the schema in a state
+  neither the migration nor the rollback describes.
+- **PHASE-4c · the refusal issues no token.** Unlike a risky-but-possible rollback,
+  there is no version of "yes" that makes dropped data come back, so minting an approval
+  would imply one exists. The refusal names the offending step and points at
+  restore-from-backup as the only real path.
+- **PHASE-4c · structured step records in the ledger.** `migration.apply` now writes
+  each step's kind/table/target alongside its SQL. Rollback needs the structure:
+  inverting SQL text by parsing it is exactly the guessing this project refuses to do.
+  Rows recorded without structure are refused with an explanation rather than guessed at.
+- **PHASE-4c · stack check.** A migration with later applied migrations on top is
+  refused — reversing an earlier change under a later one that may depend on it produces
+  failures that are hard to unwind. Refusing names the blocker instead of discovering it
+  mid-rollback.
+- **PHASE-4c · execution is transactional and gated like apply.** All reversals here are
+  transactional DDL by construction (CONCURRENTLY steps are never recorded as
+  reversible), so all-or-nothing holds; a failed rollback leaves the original migration
+  applied, which is the only state that remains describable. Confirmation token bound to
+  migration id + checksum, single-use, audited on refusal and execution alike. On
+  success the ledger row becomes `rolled_back`.
+- **PHASE-4c · scope:** `pgops:write` — same tier as `migration.apply`; a rollback can
+  destroy data just as an apply can.
+
+### Gate evidence
+
+```
+uv run pytest -q      # 371 passed (15 new rollback tests)
+uv run ruff check .   # All checks passed!
+uv run mypy src       # Success: no issues found in 32 source files
+```
+
+Live behaviour verified against testcontainers Postgres:
+
+```
+ADD COLUMN tag -> applied -> rollback (token) -> column gone, ledger row = rolled_back
+CREATE INDEX   -> applied -> rollback -> index gone, note: "no data was destroyed"
+plan w/ DROP COLUMN -> applied -> rollback -> MIGRATION_IRREVERSIBLE, no token issued
+two stacked applies -> rollback of first -> refused: "1 migration(s) were applied after"
+sabotaged reversal  -> MIGRATION_FAILED, transaction rolled back, status still 'applied'
+```
+
+---
+
 ## 2026-08-25 · Phase 6a — MCP protocol completeness
 
 Audit prompted by a direct question: the server had shipped **tools only**, which is one

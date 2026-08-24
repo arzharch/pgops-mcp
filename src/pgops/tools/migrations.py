@@ -300,8 +300,25 @@ async def _execute_plan(
 
     async with pool.acquire() as conn:
         ledger = MigrationLedger(conn)
+        # Structured step records, not just SQL text: rollback needs kind/table/target
+        # to invert each step faithfully. Parsing SQL text to recover the structure is
+        # exactly the guessing this project refuses to do.
+        step_details = [
+            {
+                "kind": s.change.kind.value,
+                "table": s.change.table,
+                "target": s.change.target,
+                "sql": s.change.sql,
+            }
+            for s in plan.steps
+        ]
         row_id = await ledger.begin(
-            plan.plan_id, name, plan.checksum, plan.sql_steps, applied_by="pgops-mcp"
+            plan.plan_id,
+            name,
+            plan.checksum,
+            plan.sql_steps,
+            applied_by="pgops-mcp",
+            step_details=step_details,
         )
         try:
             transactional = [s for s in plan.steps if s.impact.transactional]

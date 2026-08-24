@@ -217,11 +217,40 @@ Ledger history plus any `in_flight` migrations, with a `warning` when one is pre
 ---
 
 ## migration.rollback
-**Phase 4 · not yet implemented**
+**Phase 4 ✅ implemented · Role: readwrite + confirmation**
 
-Deferred deliberately. FR-3 requires generating a down-migration *and refusing with an
-explanation when it would lose data irrecoverably*; a rollback that silently drops what
-it cannot restore is worse than none. The ledger already stores the applied steps.
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| ledger_id | int | required | the ledger row id, from migration.history |
+| confirm_token | str? | null | required before anything executes |
+
+Reverses an applied migration by inverting its recorded steps, last one first (the
+index must drop before the table it depends on). Each recorded step is classified into
+one of three honest outcomes:
+
+- **reversible** — e.g. `CREATE INDEX` → `DROP INDEX`; an index is derived data
+- **reversible with data loss** — e.g. `ADD COLUMN` → `DROP COLUMN`: the schema reverts,
+  but every value written to that column since is destroyed. The confirmation reason
+  says so explicitly.
+- **irreversible** — `DROP COLUMN`, `DROP TABLE`, type changes without a recorded
+  previous type
+
+**Any irreversible step refuses the whole rollback** and issues *no* token: unlike a
+risky-but-possible rollback, no human answer changes what is possible. The refusal names
+the offending step and points at restore-from-backup as the only real way back.
+
+Also refused:
+- migrations applied **after** this one (rolling back underneath them could break their
+  assumptions) — roll back the later ones first
+- rows whose status is not `applied`
+- migrations recorded without structured step data (pre-structured-recording entries)
+
+On success the ledger row becomes `rolled_back` — history stays honest without claiming
+destroyed data came back.
+
+Error codes: `CONFIRMATION_REQUIRED`, `CONFIRMATION_MISMATCH`,
+`MIGRATION_IRREVERSIBLE`, `MIGRATION_IN_FLIGHT` (stacked), `MIGRATION_FAILED`,
+`INVALID_ARGUMENT`.
 
 ---
 
@@ -342,7 +371,7 @@ pgops-mcp --transport http --public-key <path>       # binds 127.0.0.1 by defaul
 | Scope | Grants |
 |---|---|
 | `pgops:read` | schema.inspect, query.read, query.explain, db.health, index.advise, migration.plan, migration.history, env.*, container.logs/stats |
-| `pgops:write` | query.write, migration.apply |
+| `pgops:write` | query.write, migration.apply, migration.rollback |
 | `pgops:admin` | container.restart, container.exec |
 
 The server holds only the public key — it can verify tokens, never issue them. A tool

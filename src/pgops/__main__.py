@@ -26,6 +26,7 @@ from pgops.connections import ConnectionManager
 from pgops.errors import PgopsError, tool_boundary
 from pgops.guardrails import ConfirmationTokenStore
 from pgops.middleware import ScopeEnforcement
+from pgops.migrations.rollback import rollback_migration
 from pgops.prompts import (
     diagnose_slow_query,
     explain_safety_model,
@@ -263,6 +264,24 @@ def build_server(config: PgopsConfig, conn_manager: ConnectionManager, auth: Any
         """Applied-migration history from the ledger, including any interrupted
         (in_flight) migration that needs manual resolution."""
         return await migration_history(conn_manager, limit=limit)
+
+    if not config.read_only:
+
+        @mcp.tool(name="migration.rollback")
+        @tool_boundary
+        async def migration_rollback_tool(
+            ledger_id: int, confirm_token: str | None = None
+        ) -> dict[str, Any]:
+            """Reverse an applied migration by its ledger id (from migration.history).
+
+            Refuses outright when any step is irreversible (a dropped column's data is
+            gone; no confirmation changes that) or when later migrations are stacked on
+            top. Otherwise requires a confirmation token, since a rollback can destroy
+            data written after the original apply.
+            """
+            return await rollback_migration(
+                conn_manager, audit, tokens, ledger_id, confirm_token=confirm_token
+            )
 
     @mcp.tool(name="env.topology")
     @tool_boundary

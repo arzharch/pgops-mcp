@@ -185,11 +185,13 @@ than decorative:
 | Scope | Tools |
 |---|---|
 | `pgops:read` | schema.inspect, query.read, query.explain, db.health, index.advise, **migration.plan**, migration.history, env.*, container.logs/stats |
-| `pgops:write` | query.write, **migration.apply** |
+| `pgops:write` | query.write, **migration.apply**, **migration.rollback** |
 | `pgops:admin` | container.restart, container.exec |
 
 `migration.plan` sits on the read side because it executes nothing — its dry run happens
-inside a transaction that's always rolled back. `migration.apply` doesn't, so it doesn't.
+inside a transaction that's always rolled back. `migration.apply` and
+`migration.rollback` don't — a rollback can destroy data just as an apply can — so they
+don't.
 
 And a tool with no scope entry requires `admin` — deny-by-default, the same principle as
 the SQL classifier (ADR-001). A tool added later without a scope mapping is locked down
@@ -850,13 +852,48 @@ way that reads as broken instrumentation. All four measurement sites now use
 `monotonic` is still correct for the confirmation-token TTL — a 5-minute deadline doesn't
 care about 15 ms, and "has this expired" is exactly what monotonic is for.
 
-**Q: Why no `migration.rollback` yet?**
-A: Deliberately deferred rather than half-built. The ledger stores the applied steps, so
-the mechanism is there, but PRD FR-3 requires generating a down-migration *and refusing
-with an explanation when it would lose data irrecoverably*. A rollback that silently
-drops the data it can't restore is worse than no rollback at all — the user believes they
-undid something. That honest-refusal path is the actual work, and it's listed in flow.md
-as the next item rather than quietly claimed as done.
+**Q: How does migration.rollback work — and why did it come last?**
+A: It came last deliberately, because "rollback" sounds like an undo button and for
+schema migrations it is not one. A tool that implies reversibility will eventually be
+trusted at 3am to reverse something that cannot be reversed. So the first thing the
+module does is classify each recorded step into one of **three** outcomes, not two:
+
+- *reversible* — `CREATE INDEX` → `DROP INDEX`. An index holds no information of its
+  own; dropping it destroys only derived data.
+- *reversible with data loss* — `ADD COLUMN` → `DROP COLUMN`. The schema reverts, but
+  every value written to that column since the migration is destroyed. The confirmation
+  reason says so in those words.
+- *irreversible* — `DROP COLUMN`, `DROP TABLE`, a type change whose previous type wasn't
+  recorded. There is no inverse; re-adding produces NULLs, not the original data.
+
+Any irreversible step refuses the **whole** rollback. Doing the reversible half would
+leave the schema in a state neither the forward migration nor the rollback describes —
+worse than either during the incident that prompted this.
+
+The most important design decision: **the irreversible refusal issues no token.** For a
+risky-but-possible rollback, the token flow makes sense — a human can weigh it. For an
+impossible one, minting an approval would imply there exists a version of "yes" that
+restores the data, and there isn't. The refusal names the offending step and points at
+restore-from-backup as the only real path back.
+
+Two more guards worth naming:
+
+1. **Stack check.** If later migrations were applied after this one, rollback refuses —
+   reversing an earlier change underneath a later one that may depend on it produces
+   failures that are hard to unwind. The refusal names the earliest blocker.
+2. **Reverse order execution.** The forward plan creates a table before indexing it, so
+   the inverse must drop the index before the table or the drop fails on a dependency.
+
+Execution runs in one transaction (every reversible step here is transactional DDL by
+construction — `CONCURRENTLY` steps are never classified as reversible), so a failed
+rollback leaves the original migration applied, which is the only state that remains
+describable. On success the ledger row becomes `rolled_back` — history stays honest
+without claiming destroyed data came back.
+
+One implementation detail that shaped the ledger: apply now records each step's
+*structured* form (kind/table/target) alongside its SQL. Rollback needs the structure —
+inverting SQL text by parsing it is exactly the guessing this project refuses to do. Rows
+recorded without structure are refused with an explanation rather than guessed at.
 
 ## Section 6: Phase 5 — Docker layer
 

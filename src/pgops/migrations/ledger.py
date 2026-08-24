@@ -23,7 +23,8 @@ genuinely separate, and the `in_flight` marker is the only crash evidence that e
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+import json
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
@@ -80,6 +81,7 @@ def checksum_steps(steps: list[str]) -> str:
 
 @dataclass(slots=True)
 class LedgerEntry:
+    id: int
     migration_id: str
     name: str
     checksum: str
@@ -88,6 +90,11 @@ class LedgerEntry:
     finished_at: datetime | None = None
     duration_ms: float | None = None
     error: str | None = None
+    # The recorded forward steps. Structured dicts (kind/table/target/sql) for
+    # migrations applied by the current engine version; plain SQL strings for anything
+    # applied before structured recording existed. Rollback refuses the string form —
+    # inverting SQL text by parsing it is exactly the guessing this project refuses to do.
+    steps: list[Any] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -123,6 +130,28 @@ class MigrationLedger:
         )
         return _row_to_entry(row) if row else None
 
+    async def get_by_id(self, row_id: int) -> LedgerEntry | None:
+        """Fetch one ledger row by its primary key — how rollback addresses a migration."""
+        row = await self._conn.fetchrow(f"SELECT * FROM {LEDGER_TABLE} WHERE id = $1", row_id)
+        return _row_to_entry(row) if row else None
+
+    async def applied_after(self, started_at: datetime) -> list[LedgerEntry]:
+        """Applied migrations recorded after `started_at` — the stack check.
+
+        Reversing an earlier change while later migrations sit on top of it produces
+        failures that are hard to unwind, so rollback refuses rather than picking that
+        fight silently.
+        """
+        rows = await self._conn.fetch(
+            f"""
+            SELECT * FROM {LEDGER_TABLE}
+            WHERE status = 'applied' AND started_at > $1
+            ORDER BY started_at
+            """,
+            started_at,
+        )
+        return [_row_to_entry(r) for r in rows]
+
     async def history(self, limit: int = 50) -> list[LedgerEntry]:
         rows = await self._conn.fetch(
             f"SELECT * FROM {LEDGER_TABLE} ORDER BY started_at DESC LIMIT $1", limit
@@ -130,11 +159,20 @@ class MigrationLedger:
         return [_row_to_entry(r) for r in rows]
 
     async def begin(
-        self, migration_id: str, name: str, checksum: str, steps: list[str], applied_by: str
+        self,
+        migration_id: str,
+        name: str,
+        checksum: str,
+        steps: list[str],
+        applied_by: str,
+        step_details: list[dict[str, Any]] | None = None,
     ) -> int:
-        """Record intent BEFORE running any DDL — see module docstring."""
-        import json
+        """Record intent BEFORE running any DDL — see module docstring.
 
+        `step_details` records the *structured* form of each step (kind/table/target)
+        alongside the SQL. Rollback needs the structure: inverting SQL text by parsing
+        it is exactly the guessing this project refuses to do.
+        """
         row_id: int = await self._conn.fetchval(
             f"""
             INSERT INTO {LEDGER_TABLE}
@@ -146,7 +184,7 @@ class MigrationLedger:
             name,
             checksum,
             applied_by,
-            json.dumps(steps),
+            json.dumps(step_details if step_details is not None else steps),
         )
         return row_id
 
@@ -184,7 +222,17 @@ class MigrationLedger:
 
 
 def _row_to_entry(row: asyncpg.Record) -> LedgerEntry:
+    steps_raw = row["steps"]
+    # jsonb arrives as a list already; tolerate a JSON string for robustness.
+    if isinstance(steps_raw, str):
+        try:
+            steps: list[Any] = json.loads(steps_raw)
+        except json.JSONDecodeError:
+            steps = []
+    else:
+        steps = list(steps_raw or [])
     return LedgerEntry(
+        id=row["id"],
         migration_id=row["migration_id"],
         name=row["name"],
         checksum=row["checksum"],
@@ -193,4 +241,5 @@ def _row_to_entry(row: asyncpg.Record) -> LedgerEntry:
         finished_at=row["finished_at"],
         duration_ms=row["duration_ms"],
         error=row["error"],
+        steps=steps,
     )
