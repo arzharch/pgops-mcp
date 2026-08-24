@@ -10,6 +10,8 @@ src/pgops/
 ├── audit.py             ✅ append-only JSONL audit log
 ├── plan_analysis.py     ✅ EXPLAIN plan tree + verdict rules (pure, no DB)
 ├── serialize.py         ✅ asyncpg value → JSON-safe conversion
+├── timing.py            ✅ perf_counter-based elapsed measurement (monotonic is
+│                           15.6ms-resolution on Windows and reported 0.0)
 ├── errors.py            ✅ structured error codes + tool_boundary decorator
 ├── py.typed             ✅
 ├── tools/
@@ -19,12 +21,12 @@ src/pgops/
 │   ├── explain.py       ✅ query.explain
 │   ├── advisor.py       ✅ index.advise
 │   ├── health.py        ✅ db.health
-│   ├── migrations.py    ·  migration.plan / apply / rollback + ledger
+│   ├── migrations.py    ✅ migration.plan / apply / history  (rollback still open)
 │   └── environment.py   ·  env.topology, container.logs/stats/restart/exec
 └── migrations/
-    ├── diff.py          ·  structural schema diff → ordered change set
-    ├── lock_analysis.py ·  op-class × table-size estimates + safe patterns (ADR-004)
-    └── ledger.py        ·  pgops_migrations bookkeeping, checksums, crash recovery
+    ├── diff.py          ✅ structural schema diff → dependency-ordered change set
+    ├── lock_analysis.py ✅ op-class × table-size estimates + safe patterns (ADR-004)
+    └── ledger.py        ✅ pgops_migrations bookkeeping, checksums, crash recovery
 
 tests/
 ├── conftest.py          ✅ testcontainers session fixture + perf-sized seed data
@@ -33,7 +35,9 @@ tests/
 ├── test_query_read.py   ✅  test_query_write.py   ✅  test_schema_inspect.py ✅
 ├── test_health.py       ✅  test_plan_analysis.py ✅  test_explain.py     ✅
 ├── test_advisor.py      ✅  test_server.py        ✅ (end-to-end via FastMCP)
-└── test_migrations.py   ·
+├── test_lock_analysis.py ✅ test_diff.py          ✅  test_migrations.py ✅
+├── test_timing.py       ✅
+└── test_stdio_server.py ✅ (server as a real subprocess over stdio)
 
 Deviations from the original plan, and why:
 - `tools/query.py` split into `query.py` (read) + `write.py` (write). The write path

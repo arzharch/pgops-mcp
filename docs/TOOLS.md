@@ -144,37 +144,84 @@ finding carries `{category, severity, summary, detail}` where severity is one of
 
 ---
 
-## schema.diff
-**Phase 4 · Role: readonly**
-
-Diff live schema against a target definition or migration history point.
-
-| Param | Type | Notes |
-|---|---|---|
-| target | object | desired schema subset (tables/columns/constraints/indexes) |
-| base | str? | defaults to current live state |
-
-Returns ordered change set with dependency-aware ordering.
-
----
-
 ## migration.plan
-**Phase 4 · Role: readonly (no execution)**
+**Phase 4 ✅ implemented · Role: readonly (dry-run is rolled back)**
 
-Render a migration plan from a diff.
+Diff the live schema against a target and render an annotated plan. Executes nothing.
 
-Returns steps: `[{id, sql, lock_impact: {estimate_ms, confidence, reasoning},
-safe_pattern_applied?, dry_run_result}]`. Dry-run validates inside rolled-back
-transactions where the step permits. Nothing is applied.
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| target | object | required | desired state (see below) |
+| allow_drops | bool | false | required before any removal is emitted |
+| dry_run | bool | true | executes steps in an always-rolled-back transaction |
+
+Target format — desired *state*, not migration SQL:
+
+```json
+{"tables": {"orders": {
+   "columns":     {"note": {"type": "text", "nullable": true, "default": "'x'"}},
+   "indexes":     {"idx_orders_status": "status"},
+   "constraints": {"orders_total_chk": "CHECK (total_cents >= 0)"}
+}}}
+```
+
+Returns `{plan_id, checksum, atomic, highest_risk, destructive, steps[], dry_run_ok,
+notes[]}`. Each step carries its SQL plus `lock_impact`:
+`{operation, risk, lock_mode, blocks_reads, blocks_writes, rewrites_table, estimate_ms,
+confidence, reasoning, safe_alternative, transactional}`.
+
+Behaviour worth knowing:
+- Tables/columns absent from the target are **left alone** unless `allow_drops=true`; a
+  note lists what was skipped.
+- Ordering is dependency-safe: creations tables → columns → constraints → indexes, drops
+  in reverse.
+- Type aliases are normalized (`int`/`integer`, `varchar`/`character varying`) so
+  identical types never produce a spurious rewriting `ALTER TYPE`.
+- `atomic: false` when the plan contains `CREATE INDEX CONCURRENTLY`, which cannot run
+  in a transaction — a later failure then leaves earlier steps applied.
+- `pgops_migrations` is pgops's own ledger: excluded from diffs, refused as a target.
+- Unsupported constructs (views, triggers, functions, partitions) are **refused**, not
+  silently skipped.
 
 ---
 
-## migration.apply / migration.rollback
-**Phase 4 · Role: readwrite + confirmation**
+## migration.apply
+**Phase 4 ✅ implemented · Role: readwrite + confirmation**
 
-Apply or roll back a plan. Versioned ledger (`pgops_migrations`): id, checksum,
-applied_at, duration, applied_by. Rollback uses generated down-migration; refuses with
-explanation when it would lose data irrecoverably.
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| plan_id | str | required | from a prior migration.plan |
+| confirm_token | str? | null | required for destructive or high-risk plans |
+| name | str | "unnamed" | recorded in the ledger |
+
+Destructive steps or any `high` risk step are refused on the first call with a reason
+naming the actual data loss. Plans are held in memory for the life of the server.
+Re-applying an already-applied plan is a no-op.
+
+Ledger (`pgops_migrations`): `migration_id, name, checksum, status, started_at,
+finished_at, duration_ms, applied_by, error, steps`. The row is written `in_flight`
+**before** the DDL runs, so an interrupted migration is detectable; a stranded
+`in_flight` row causes later applies to refuse with `MIGRATION_IN_FLIGHT` rather than
+guessing which steps landed.
+
+Error codes: `CONFIRMATION_REQUIRED`, `CONFIRMATION_MISMATCH`, `MIGRATION_IN_FLIGHT`,
+`MIGRATION_FAILED`, `READ_ONLY_MODE`, `INVALID_ARGUMENT`.
+
+---
+
+## migration.history
+**Phase 4 ✅ implemented · Role: readonly**
+
+Ledger history plus any `in_flight` migrations, with a `warning` when one is present.
+
+---
+
+## migration.rollback
+**Phase 4 · not yet implemented**
+
+Deferred deliberately. FR-3 requires generating a down-migration *and refusing with an
+explanation when it would lose data irrecoverably*; a rollback that silently drops what
+it cannot restore is worse than none. The ledger already stores the applied steps.
 
 ---
 
