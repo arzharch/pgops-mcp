@@ -69,16 +69,16 @@ Add to Claude Desktop:
 
 ## Status
 
-**Phases 0–2 complete** (115 tests, all guardrails proven against real Postgres via
-testcontainers — no mocks).
+**Phases 0–3 complete** (163 tests, all guardrails and verdicts proven against real
+Postgres via testcontainers — no mocks).
 
 | Phase | State | Tools |
 |---|---|---|
 | 0 · Bootstrap | ✅ | seeded dev stack (1.2M-row `orders`), CI, lint/type gates |
 | 1 · Connection core + read path | ✅ | `schema.inspect`, `query.read`, `db.health` |
 | 2 · Write path + safety | ✅ | `query.write`, guardrails, confirmation tokens, audit log |
-| 3 · Performance brain | next | `query.explain`, `index.advise` |
-| 4 · Migration engine | planned | `schema.diff`, `migration.plan/apply/rollback` |
+| 3 · Performance brain | ✅ | `query.explain` (plan verdicts), `index.advise` |
+| 4 · Migration engine | next | `schema.diff`, `migration.plan/apply/rollback` |
 | 5 · Docker layer | planned | `env.topology`, `container.logs/stats` |
 
 Quickstart the dev database (host port **5433**, to avoid colliding with a local

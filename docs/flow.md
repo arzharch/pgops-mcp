@@ -5,6 +5,79 @@
 
 ---
 
+## 2026-08-24 · Phase 3 — Explain & performance brain
+
+- **PHASE-3:** `plan_analysis.py` — pure functions over `EXPLAIN (FORMAT JSON)` output,
+  no DB access, so every rule is unit-testable against captured plans. Six verdict
+  kinds: `seq_scan_large_table`, `expensive_filter`, `estimate_divergence`,
+  `sort_spill`, `nested_loop_blowup`, `dominant_node`.
+- **PHASE-3:** Two correctness details that decide whether the output is trustworthy:
+  - **Loops.** `Actual Rows` / `Actual Total Time` / `Plan Rows` are all *per loop*.
+    A node reporting `Actual Rows: 80000, Actual Loops: 3` returned 240,000 rows. A
+    parser that compares `Plan Rows` to `Actual Rows` directly reports wild estimate
+    divergence on every parallel plan in existence.
+  - **Parallel loops ≠ sequential loops.** Got this wrong first and the dev database
+    caught it: the analyzer emitted *"5180ms of 2400ms total (216%)"*. Under a Nested
+    Loop, `Actual Loops` counts iterations; under a Gather it counts concurrent
+    *workers*. Rows sum across workers, wall-clock time does not. Nodes now carry a
+    `parallel` flag set while descending through Gather/Gather Merge; time multiplies
+    by loops only when it isn't set. Same query now reads 876ms of 1248ms (70%).
+- **PHASE-3:** Self time, not total time, identifies the bottleneck — a node's
+  `Actual Total Time` includes its children, so ranking by total always names the root.
+- **PHASE-3:** Thresholds are named constants with stated reasoning (`SEQ_SCAN_MIN_ROWS
+  = 10_000` — below that a seq scan is the *correct* plan and flagging it would train
+  the reader to ignore the verdict list). Several tests assert healthy queries produce
+  **no** verdict.
+- **PHASE-3:** `tools/explain.py` — `query.explain`. The safety issue unique to this
+  tool: **`EXPLAIN ANALYZE DELETE FROM orders` performs the delete.** `analyze=false`
+  (default) never executes. `analyze=true` on a mutating statement runs inside a
+  transaction that is *always* rolled back, and still goes through the full
+  guardrail + confirmation-token + audit path — rollback is not a complete undo
+  (`nextval()` and side effects inside functions don't roll back), so the gate stays
+  rather than being waived on the strength of "we roll it back anyway". The rollback is
+  structural: the transaction block is exited by raising, so no code path commits.
+- **PHASE-3:** `tools/advisor.py` — `index.advise`. Findings ordered by confidence:
+  unused indexes and redundant (prefix) indexes from catalog structure, sequential-scan
+  hotspots and slowest statements from workload stats. Primary-key and unique indexes
+  are never reported as unused or redundant — they enforce correctness, and "nobody
+  scanned it" is not a reason to drop a uniqueness guarantee. Degrades gracefully with
+  an explanatory note when `pg_stat_statements` isn't installed.
+- **PHASE-3 · BUG found on the live stack:** the advisor recommended
+  `DROP INDEX idx_orders_customer_id` — an index a query had used *seconds earlier*.
+  `pg_stat` counters lag, so it read a stale `idx_scan = 0`. Confidently wrong advice
+  is worse than none: it discredits every other finding. Now the observation window is
+  measured from `pg_stat_database.stats_reset`, reported in the response, and gates the
+  recommendation — under 7 days the finding is marked `confidence: low` and the
+  suggestion becomes an explicit "do NOT drop this yet".
+
+### Gate evidence
+
+```
+uv run pytest -q      # 163 passed
+uv run ruff check .   # All checks passed!
+uv run mypy src       # Success: no issues found in 17 source files
+```
+
+SPEC gate requires ≥10 seeded slow-query scenarios diagnosed correctly —
+`tests/test_explain.py` has 18 against real Postgres (seq scan, expensive filter, sort
+spill, nested loop, estimate divergence from correlated columns, plus negative cases:
+indexed lookup, PK lookup, and small-table scan must produce *no* verdict).
+
+Live dev stack (1.2M-row `orders`):
+
+```
+query.explain "SELECT * FROM orders WHERE status='paid' ORDER BY total_cents" analyze=true
+  [warning] sort_spill           sort spilled to disk (external merge, 3,712 kB)
+  [warning] seq_scan_large_table sequential scan examined 1,200,000 rows on orders
+  [info]    dominant_node        876ms of 1248ms total (70%) in this node alone
+
+index.advise
+  hotspot orders: 21 sequential scans read 8,400,000 rows from a table of ~1,200,000
+  stats_window: {'observed_for': 'unknown', 'sufficient_for_unused_index_advice': False}
+```
+
+---
+
 ## 2026-08-24 · Phase 2 — Write path + safety architecture
 
 - **PHASE-2:** `guardrails.py`: two independent mechanisms. (1) Unbounded-mutation
@@ -240,7 +313,11 @@ uv run pytest -q      # 1 passed
 
 ## Next up
 
-- [ ] Phase 3: `query.explain` (EXPLAIN plan parser + verdicts), `index.advise`
+- [ ] Phase 4 ⭐: migration engine — `schema.diff`, lock-impact analysis,
+      `migration.plan/apply/rollback` with a versioned ledger
 - [ ] Known gap to close: classifier can't see writes inside volatile functions
       (`SELECT my_func()`); needs a `pg_proc.provolatile` catalog lookup. Currently
       caught only by the read-only pool at execution time (ADR-001).
+- [ ] `index.advise` names the table taking sequential scans but not the *column* to
+      index — that needs plan inspection per statement. Currently honest about it
+      ("run query.explain on this statement") rather than fabricating a CREATE INDEX.

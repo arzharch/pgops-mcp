@@ -392,13 +392,149 @@ and sequence state that can't be rolled back. That's the clearest evidence I hav
 the layered design is doing real work rather than just sounding good: the layer that
 catches these is not the one designed to.
 
-## Section 4: Phase 3 — Performance brain (populate as you build)
+## Section 4: Phase 3 — Performance brain
 
 **Q: How do you know your EXPLAIN verdicts are correct?**
-A: (to fill — seeded scenario suite: each fixture has a known defect and expected verdict)
+A: Two layers. Unit tests over synthetic plan JSON assert the *arithmetic* exactly —
+loop multiplication, self-time subtraction, parallel handling — because those need
+plans with known numbers. Then 18 seeded scenarios in `test_explain.py` run against
+real Postgres and assert the rules fire on plans **Postgres actually chose**, which is
+the only way to know a threshold matches reality rather than my assumptions.
+
+The negative scenarios matter as much as the positive ones: an indexed lookup, a
+primary-key lookup, and a small-table scan must produce *no* verdict. A rule set that
+flags something on every query is noise, and a reader who learns to ignore the verdict
+list gets nothing from the one time it's important.
+
+**Q: What's the hardest thing to get right when parsing an EXPLAIN plan?**
+A: Loops, and I got it wrong the first time in a way the database caught for me.
+
+`Actual Rows`, `Actual Total Time`, and `Plan Rows` are all **per loop**, not totals. A
+node reporting `Actual Rows: 80000, Actual Loops: 3` returned 240,000 rows. So you
+multiply by loops — and that's where the subtlety is, because *loops don't always mean
+the same thing*. Under a Nested Loop, `Actual Loops` counts sequential iterations, so
+time genuinely multiplies. Under a Gather, it counts **concurrent parallel workers** —
+rows still sum, but wall-clock time does not, because they ran at the same time.
+
+Multiplying time by loops everywhere produced this against the dev database:
+
+```
+[info] dominant_node: 5180ms of 2400ms total (216%) is spent in this node alone
+```
+
+216% is not just wrong, it's *obviously* wrong, which is why I'd rather find it that way
+than in a subtly plausible number. The fix propagates a `parallel` flag while descending
+through Gather/Gather Merge nodes:
+
+```python
+child_parallel = parallel or node_type in _GATHER_NODES
+
+@property
+def total_time_ms(self) -> float | None:
+    if self.parallel:
+        return self.actual_total_time_ms      # workers overlap; don't sum
+    return self.actual_total_time_ms * self.actual_loops
+```
+
+Same query now reports 876ms of 1248ms (70%). There's a regression test asserting no
+node can own more than 100% of execution time.
+
+**Q: Why report "self time" instead of total time?**
+A: A node's `Actual Total Time` includes all of its children, so ranking nodes by total
+time always names the root — which tells you nothing, since of course the whole query
+took the whole query's time. Self time (total minus children's totals) is what actually
+localizes the cost. That's the difference between "your query is slow" and "6 of your 8
+seconds are in this one sequential scan".
 
 **Q: What does estimate-vs-actual row divergence tell you?**
-A: (to fill — stale statistics → ANALYZE hint; misestimates → bad plan shapes)
+A: It's usually the *root cause* rather than a symptom. Postgres picks join strategies
+from estimated cardinalities — expecting 10 rows it chooses a nested loop, expecting 10
+million it chooses a hash join. When the estimate is off by 10x+, the plan shape is
+chosen for a query that doesn't exist, and everything downstream looks inexplicable.
+
+Two causes worth distinguishing: stale statistics (fix: `ANALYZE`) and **correlated
+columns**. The planner assumes independence, so for `WHERE a = 1 AND b = 1` it multiplies
+the two selectivities. If `a` and `b` are perfectly correlated it underestimates by the
+cardinality of one of them. That's what the seeded divergence scenario builds, and the
+suggestion points at `CREATE STATISTICS`, which is the actual fix — `ANALYZE` alone will
+never help there.
+
+I only flag divergence above 1,000 rows: 1 estimated vs 50 actual is a 50x ratio that
+changes no plan decision.
+
+**Q: `EXPLAIN` is read-only, so `query.explain` is a safe tool, right?**
+A: No — and this is the trap I think is worth catching in an interview. `EXPLAIN ANALYZE
+DELETE FROM orders` **performs the delete**. `ANALYZE` means "execute it and report real
+timings". A tool that treats "explain" as inherently read-only will eventually delete a
+production table because somebody wanted to know why a query was slow.
+
+So `analyze=false` (the default) never executes. `analyze=true` on a mutating statement
+runs inside a transaction that is always rolled back, *and* goes through the same
+guardrail, confirmation-token, and audit path as `query.write`. I deliberately did not
+waive the confirmation on the grounds that it's rolled back, because rollback is not a
+complete undo: sequence values consumed by `nextval()` don't roll back, and neither do
+side effects inside functions the statement calls.
+
+The rollback is structural rather than conditional:
+
+```python
+async with pool.acquire() as conn, conn.transaction():
+    raw = await conn.fetchval(explain_sql)
+    captured = json.loads(raw) if isinstance(raw, str) else raw
+    raise _Rollback          # exits the block as a failure -> transaction aborts
+```
+
+A `try/finally` calling rollback would be weaker, and an early `return` inside the block
+would skip it entirely. There's no path where that transaction commits. Tests assert the
+rows survive and that `execution_time_ms > 0`, i.e. it really did run.
+
+**Q: Your advisor recommends dropping indexes. How do you know they're really unused?**
+A: I don't, on a short window — and finding that out is the most useful thing that
+happened in this phase. Running the advisor against the live database, it told me:
+
+```
+unused idx_orders_customer_id (10764288 bytes): DROP INDEX idx_orders_customer_id;
+```
+
+That index had been used *seconds earlier* by the explain query I'd just run. `pg_stat`
+counters lag, so `idx_scan` read a stale `0`. Had I followed my own tool's advice I'd
+have dropped a working index off a 1.2M-row table.
+
+`idx_scan = 0` genuinely has two causes — "nothing uses this" and "we haven't been
+watching long enough" — and they're indistinguishable from the counter alone. So the
+tool now measures the observation window from `pg_stat_database.stats_reset`, reports it
+in the response, and gates the recommendation on it. Under 7 days:
+
+```json
+{"confidence": "low",
+ "suggestion": "do NOT drop idx_recently_used yet — statistics have only been collected
+                for 4 minutes, which is too short to conclude it is unused..."}
+```
+
+Seven days because a weekly reporting job needs a week to show up. The general principle
+is the one from ADR-004: confidently wrong advice is worse than no advice, because it
+discredits every other finding the tool produces.
+
+**Q: What else does the advisor deliberately refuse to say?**
+A: Two things. First, it never reports primary-key or unique indexes as unused or
+redundant. `UNIQUE (email)` is not superseded by `(email, region)` — the composite
+serves the same *queries* but does not enforce the same *rule*. Conflating those is how
+an advisor talks someone into dropping their uniqueness guarantee.
+
+Second, for missing indexes it names the table taking sequential scans but not the
+column to index, because it can't know that without inspecting a plan. The output is
+"here's the evidence, run `query.explain` on this statement" rather than a fabricated
+`CREATE INDEX` that looks authoritative. That's a deliberate honesty/usefulness trade,
+and it's on the roadmap to close properly by feeding statements from
+`pg_stat_statements` through the plan analyzer.
+
+**Q: What if `pg_stat_statements` isn't installed?**
+A: It's an extension requiring `shared_preload_libraries` and a restart, so plenty of
+databases won't have it. Its absence degrades the tool to catalog-only findings plus a
+note explaining how to enable it — it doesn't fail the call. There's also a `try/except`
+around reading it when it *is* present, because the column names changed across major
+versions (`total_time` became `total_exec_time` in PG13); a version mismatch degrades
+the same way rather than taking out the whole response.
 
 ## Section 5: Phase 4 — Migration engine (populate as you build)
 
