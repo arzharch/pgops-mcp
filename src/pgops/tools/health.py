@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from pgops.connections import ConnectionManager
-from pgops.serialize import serialize_value
+from pgops.serialize import serialize_record, serialize_value
 
 Severity = Literal["ok", "info", "warning", "critical"]
 
@@ -47,22 +47,21 @@ WHERE state = 'active'
 ORDER BY duration DESC
 """
 
+# pg_blocking_pids() is Postgres's own answer to "who is blocking this backend" and is
+# the right tool here. The hand-rolled alternative — self-joining pg_locks on
+# locktype/database/relation — is the recipe that circulates on blogs, and it is subtly
+# wrong: it misses lock types those columns don't identify (tuple, transactionid,
+# virtualxid, advisory), and it reports false positives for lock modes that don't
+# actually conflict. pg_blocking_pids consults the real lock manager, including
+# conflict-mode rules and parallel-worker leaders.
 _WAITING_LOCKS_SQL = """
 SELECT
     blocked.pid AS blocked_pid,
-    left(blocked_activity.query, 200) AS blocked_query,
-    blocking.pid AS blocking_pid,
-    left(blocking_activity.query, 200) AS blocking_query
-FROM pg_locks blocked
-JOIN pg_stat_activity blocked_activity ON blocked_activity.pid = blocked.pid
-JOIN pg_locks blocking
-    ON blocking.locktype = blocked.locktype
-   AND blocking.database IS NOT DISTINCT FROM blocked.database
-   AND blocking.relation IS NOT DISTINCT FROM blocked.relation
-   AND blocking.pid <> blocked.pid
-   AND blocking.granted
-JOIN pg_stat_activity blocking_activity ON blocking_activity.pid = blocking.pid
-WHERE NOT blocked.granted
+    left(blocked.query, 200) AS blocked_query,
+    now() - blocked.query_start AS blocked_for,
+    pg_blocking_pids(blocked.pid) AS blocking_pids
+FROM pg_stat_activity blocked
+WHERE cardinality(pg_blocking_pids(blocked.pid)) > 0
 """
 
 
@@ -90,7 +89,7 @@ class HealthReport:
 
 async def db_health(conn_manager: ConnectionManager) -> HealthReport:
     findings: list[Finding] = []
-    async with conn_manager.readonly_pool.acquire() as conn:
+    async with conn_manager.acquire_readonly() as conn:
         conn_rows = await conn.fetch(_CONNECTIONS_SQL)
         by_state = {r["state"] or "unknown": r["n"] for r in conn_rows}
         total = sum(by_state.values())
@@ -122,7 +121,9 @@ async def db_health(conn_manager: ConnectionManager) -> HealthReport:
                     severity,
                     f"{worst['relname']} has {worst['dead_pct']}% dead tuples "
                     f"({worst['n_dead_tup']} of {worst['n_live_tup'] + worst['n_dead_tup']})",
-                    [dict(r) for r in dead],
+                    # serialize_record, not dict(): dead_pct is a Postgres numeric and
+                    # arrives as a Decimal, which json.dumps cannot encode.
+                    [serialize_record(r) for r in dead],
                 )
             )
 
@@ -152,7 +153,15 @@ async def db_health(conn_manager: ConnectionManager) -> HealthReport:
                     "waiting_locks",
                     "critical",
                     f"{len(waiting)} session(s) blocked waiting on a lock",
-                    [dict(r) for r in waiting],
+                    [
+                        {
+                            "blocked_pid": r["blocked_pid"],
+                            "blocked_query": r["blocked_query"],
+                            "blocked_for_s": serialize_value(r["blocked_for"]),
+                            "blocking_pids": list(r["blocking_pids"]),
+                        }
+                        for r in waiting
+                    ],
                 )
             )
 
