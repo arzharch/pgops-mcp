@@ -284,3 +284,77 @@ shell.
 
 Error codes: `APPROVAL_MODE_REQUIRED`, `EXEC_NOT_ALLOWED`, `CONFIRMATION_REQUIRED`,
 `CONFIRMATION_MISMATCH`, `CONTAINER_NOT_FOUND`, `DOCKER_UNAVAILABLE`.
+
+---
+
+# Resources
+
+Read-only state addressable by URI. A client can attach these as context without the
+model spending a turn on a tool call. All mirror data already reachable through tools.
+
+| URI | Contents |
+|---|---|
+| `pgops://schema` | Full schema: tables, columns, constraints, indexes, extensions |
+| `pgops://schema/summary` | Table names, row estimates, sizes — the cheap version |
+| `pgops://schema/{table}` | One table's full definition (template) |
+| `pgops://health` | Health snapshot with severities |
+| `pgops://migrations` | Ledger history, including interrupted migrations |
+| `pgops://audit/recent` | Recent audit metadata — **SQL text omitted** (see below) |
+| `pgops://config` | Effective safety configuration — **DSN omitted** |
+
+Two deliberate redactions:
+- `pgops://config` never includes the DSN, which carries the password.
+- `pgops://audit/recent` returns verdicts, timings, tool names and SQL *hashes* but not
+  statement text. The on-disk log keeps full SQL because an incident review needs it; a
+  resource may be auto-attached to model context, and executed SQL embeds literal values
+  (an email in a WHERE clause, an amount in an UPDATE).
+
+---
+
+# Prompts
+
+| Name | Arguments | Purpose |
+|---|---|---|
+| `diagnose-slow-query` | `sql` | Evidence-driven slow query investigation |
+| `plan-safe-migration` | `description` | Zero-downtime schema change, lock impact first |
+| `incident-triage` | — | Cheapest, most-likely checks first |
+| `review-index-health` | — | Index review respecting the statistics window |
+| `explain-safety-model` | — | What this server will and will not permit |
+
+Prompts encode the *order* to use tools in and what to do with the answers — the part no
+individual tool can express.
+
+---
+
+# Authentication
+
+stdio requires none: the server is a subprocess the client spawns, with no open port and
+no remote caller. HTTP requires it and **refuses to start without `--public-key`**.
+
+```bash
+pgops-mcp keygen                                     # RS256 keypair
+pgops-mcp issue-token --subject my-agent             # read-only by default
+pgops-mcp issue-token --subject bot --scope pgops:read --scope pgops:write
+pgops-mcp scopes                                     # scope required by each tool
+pgops-mcp --transport http --public-key <path>       # binds 127.0.0.1 by default
+```
+
+| Scope | Grants |
+|---|---|
+| `pgops:read` | schema.inspect, query.read, query.explain, db.health, index.advise, migration.plan, migration.history, env.*, container.logs/stats |
+| `pgops:write` | query.write, migration.apply |
+| `pgops:admin` | container.restart, container.exec |
+
+The server holds only the public key — it can verify tokens, never issue them. A tool
+with no scope entry requires `pgops:admin` (deny by default). `subject` identifies the
+agent for audit purposes.
+
+---
+
+# Human approval
+
+Dangerous actions ask the **user** directly via MCP elicitation where the client supports
+it, rather than routing approval through the agent. Where it does not, the server falls
+back to the confirmation-token protocol — degraded, but never to "allowed". A user who
+declines gets `CONFIRMATION_DECLINED` and **no token**: an explicit refusal is not
+convertible into a credential. The audit log records which method approved each action.
