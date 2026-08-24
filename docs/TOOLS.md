@@ -77,32 +77,60 @@ Error codes: `CONFIRMATION_REQUIRED`, `INVALID_CONFIRMATION`, `CONFIRMATION_MISM
 ---
 
 ## query.explain
-**Phase 3 · Role: readonly**
+**Phase 3 ✅ implemented · Role: readonly, or readwrite when `analyze=true` on a write**
 
 Explain a statement and return a parsed verdict.
 
 | Param | Type | Default | Notes |
 |---|---|---|---|
-| sql | str | required | SELECT/INSERT/UPDATE/DELETE plans supported |
-| analyze | bool | false | actually executes (on readwrite pool if mutating) |
-| format | enum: json | json | text format not offered to agents |
+| sql | str | required | any single statement |
+| analyze | bool | false | **executes the statement** — see below |
+| confirm_token | str? | null | required for `analyze=true` on a guarded statement |
+| timeout_ms | int? | 5000 | tiered cap, server max overrides |
 
-Returns: plan tree (compact), plus `verdicts[]`: each `{kind, severity, node, evidence,
-suggestion}` — kinds include seq_scan_large_table, estimate_divergence, sort_spill,
-nested_loop_blowup, expensive_filter.
+⚠️ `EXPLAIN ANALYZE DELETE FROM t` **performs the delete** — `ANALYZE` executes the
+statement. Handling:
+- `analyze=false` (default): plans only, never executes. Safe for any statement.
+- `analyze=true` on a read: executes a read, readonly pool.
+- `analyze=true` on a mutating statement: runs inside an always-rolled-back transaction
+  on the readwrite pool, gated by the same guardrails and confirmation token as
+  `query.write`, and audited. Rollback does not undo `nextval()` or side effects inside
+  called functions, which is why the gate is not waived.
+
+Returns `{analyzed, plan, verdicts[], planning_time_ms?, execution_time_ms?}`.
+`plan` is a compact tree (`node`, `planned_rows`, `actual_rows`, `total_time_ms`,
+`self_time_ms`, `loops`, `children`) — the raw plan's per-worker buffer counters are
+dropped as noise.
+
+Each verdict is `{kind, severity, node, evidence, suggestion}`, sorted most-severe
+first. Kinds: `seq_scan_large_table`, `expensive_filter`, `estimate_divergence`,
+`sort_spill`, `nested_loop_blowup`, `dominant_node`.
+
+Row and time values account for `Actual Loops`, and distinguish parallel workers
+(concurrent — times overlap) from nested-loop iterations (sequential — times add).
 
 ---
 
 ## index.advise
-**Phase 3 · Role: readonly**
+**Phase 3 ✅ implemented · Role: readonly**
 
-Index recommendations from workload statistics.
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| limit | int | 10 | how many slow statements to return |
 
 Returns:
-- top slow statements (from pg_stat_statements)
-- missing-index suggestions: columns/ordering, predicted impact, CREATE INDEX CONCURRENTLY DDL
-- unused indexes (zero scans, size cost)
-- redundant indexes (prefix of another)
+- `stats_window` — how long the counters have been accumulating, and whether that is
+  long enough to trust unused-index findings
+- `unused_indexes` — zero scans, with `confidence` (`high` only when statistics span
+  ≥7 days) and size cost. Primary-key and unique indexes are never reported.
+- `redundant_indexes` — column list is a strict prefix of another index's. Unique and
+  primary-key indexes are excluded: a composite serves the same queries but does not
+  enforce the same constraint.
+- `scan_hotspots` — tables taking sequential scans under load. Names the table, not the
+  column: identifying the column needs plan inspection, so the suggestion is to run
+  `query.explain` rather than a fabricated `CREATE INDEX`.
+- `top_statements` — slowest by total execution time (requires `pg_stat_statements`;
+  absence degrades to catalog findings plus an explanatory note)
 
 ---
 
