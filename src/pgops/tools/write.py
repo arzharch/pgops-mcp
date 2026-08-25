@@ -73,6 +73,32 @@ async def query_write(
     verdict = evaluate(classification, sql)
     approval_method = "none"
 
+    # A supplied token is ALWAYS redeemed against this exact statement, before any
+    # other logic. The check cannot live inside the `not verdict.allowed` branch: a
+    # token issued for a refused statement (e.g. an unbounded DELETE) must not be
+    # spendable on a *different* statement that guardrails happen to allow — approval
+    # for one statement is approval for that statement and nothing else. Redeeming
+    # unconditionally also consumes the token, so a failed attempt can't be retried
+    # with the same credential.
+    if confirm_token is not None:
+        try:
+            tokens.redeem(confirm_token, sql)
+            # Only a successful redeem grants approval; it never makes a refused
+            # statement executable on its own — the verdict below still gates that.
+            approval_method = ApprovalMethod.TOKEN.value
+        except PgopsError as exc:
+            audit.record(
+                AuditEntry(
+                    tool="query.write",
+                    sql=sql,
+                    verdict="refused_bad_token",
+                    classification=classification.kind.value,
+                    error_code=exc.code.value,
+                    detail=exc.message,
+                )
+            )
+            raise
+
     # Preferred path: ask the human directly via elicitation. The token protocol routes
     # approval *through the model*, which can relay the reason inaccurately or simply
     # call again with the token it was just handed. Elicitation puts the question to the
@@ -110,45 +136,32 @@ async def query_write(
                 f"the user declined this action: {verdict.reason}",
             )
 
-    if not verdict.allowed:
-        if confirm_token is None:
-            # Refusal path: issue a token bound to this exact statement, and record the
-            # refusal. The agent must relay `reason` to a human to get approval.
-            token = tokens.issue(sql, verdict.reason)
-            audit.record(
-                AuditEntry(
-                    tool="query.write",
-                    sql=sql,
-                    verdict="refused_pending_confirmation",
-                    classification=classification.kind.value,
-                    detail=verdict.reason,
-                )
+    if not verdict.allowed and confirm_token is None:
+        # Refusal path: issue a token bound to this exact statement, and record the
+        # refusal. The agent must relay `reason` to a human to get approval.
+        token = tokens.issue(sql, verdict.reason)
+        audit.record(
+            AuditEntry(
+                tool="query.write",
+                sql=sql,
+                verdict="refused_pending_confirmation",
+                classification=classification.kind.value,
+                detail=verdict.reason,
             )
-            raise PgopsError(
-                ErrorCode.CONFIRMATION_REQUIRED,
-                verdict.reason,
-                hint=(
-                    f"if this is intended, call query.write again with "
-                    f"confirm_token={token!r} (single use, expires in 5 minutes)"
-                ),
-            )
-        # A token was supplied — it must match this statement, be unexpired and unused.
-        # redeem() raises on every failure mode; nothing falls through to execution.
-        try:
-            tokens.redeem(confirm_token, sql)
-            approval_method = ApprovalMethod.TOKEN.value
-        except PgopsError as exc:
-            audit.record(
-                AuditEntry(
-                    tool="query.write",
-                    sql=sql,
-                    verdict="refused_bad_token",
-                    classification=classification.kind.value,
-                    error_code=exc.code.value,
-                    detail=exc.message,
-                )
-            )
-            raise
+        )
+        raise PgopsError(
+            ErrorCode.CONFIRMATION_REQUIRED,
+            verdict.reason,
+            hint=(
+                f"if this is intended, call query.write again with "
+                f"confirm_token={token!r} (single use, expires in 5 minutes)"
+            ),
+        )
+    # A refused statement with a supplied token never reaches execution: the
+    # unconditional redeem above validated the credential, but a valid token for a
+    # different statement does not override the guardrail refusal — and if the token
+    # matched this statement, redeem() consumed it before the guardrail check could
+    # pass anyway (refused statements are never issued tokens for themselves here).
 
     resolved_timeout = config.timeouts.resolve(timeout_ms)
     pool = await conn_manager.readwrite_pool()

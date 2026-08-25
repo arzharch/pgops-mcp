@@ -101,6 +101,44 @@ async def test_token_from_one_statement_cannot_run_another(
     assert await _count(config.dsn) == 250
 
 
+async def test_token_for_refused_statement_cannot_run_allowed_statement(
+    conn_manager: ConnectionManager,
+    config: PgopsConfig,
+    audit: AuditLog,
+    tokens: ConfirmationTokenStore,
+) -> None:
+    """The escalation direction, found by the live-server eval suite.
+
+    A token issued for a *refused* statement (unbounded DELETE — guardrails refuse it)
+    must not be spendable on a different statement that guardrails happen to allow
+    (a narrow DELETE). Before the fix, the redeem check only ran inside the
+    `not verdict.allowed` branch, so an allowed statement with any valid-looking token
+    executed without ever checking what that token was actually approved for. Approval
+    for one statement is approval for that statement and nothing else.
+    """
+    # token for the BROAD statement (which guardrails would refuse)
+    token = tokens.issue("DELETE FROM items", "unbounded delete")
+    with pytest.raises(PgopsError) as exc_info:
+        await query_write(
+            conn_manager,
+            config,
+            audit,
+            tokens,
+            "DELETE FROM items WHERE name = 'item-1'",
+            confirm_token=token,
+        )
+    assert exc_info.value.code is ErrorCode.CONFIRMATION_MISMATCH
+    # nothing was deleted under a misapplied credential
+    assert await _count(config.dsn) == 250
+
+    # and the original token is still outstanding for its own statement: a failed
+    # redemption consumed nothing, so the user's pending approval is intact
+    result = await query_write(
+        conn_manager, config, audit, tokens, "DELETE FROM items", confirm_token=token
+    )
+    assert result.rows_affected == 250
+
+
 async def test_read_statement_routed_away(
     conn_manager: ConnectionManager,
     config: PgopsConfig,

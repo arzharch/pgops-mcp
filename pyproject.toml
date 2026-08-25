@@ -42,6 +42,7 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 markers = [
     "slow: spawns the server as a subprocess (stdio transport end-to-end)",
+    "live: boots a real HTTP server and evaluates it end-to-end incl. benchmarks; run explicitly with -m live",
 ]
 
 [tool.ruff]
