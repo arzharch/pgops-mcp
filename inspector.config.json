@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "pgops": {
+      "command": "uv",
+      "args": ["run", "pgops-mcp"],
+      "env": {
+        "PGOPS_DSN": "postgresql://pgops:pgops_dev@localhost:5433/pgops_demo"
+      }
+    }
+  }
+}
