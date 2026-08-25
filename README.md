@@ -95,6 +95,7 @@ Add to Claude Desktop:
 
 ## Docs
 
+- [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md) — **new here? start here** — first 15 minutes, guided
 - [`SETUP.md`](SETUP.md) — full setup guide: config, clients, HTTP auth, troubleshooting
 - [`.env.example`](.env.example) — every environment variable, documented
 
