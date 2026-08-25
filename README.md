@@ -139,11 +139,11 @@ ALTER TABLE "orders" ALTER COLUMN "total_cents" TYPE bigint
          trigger, swap the names, then drop the old column
 ```
 
-Quickstart the dev database (host port **5433**, to avoid colliding with a local
+Quickstart the dev database (host port **5435**, to avoid colliding with a local
 Postgres on 5432):
 
 ```bash
 docker compose up -d
-export PGOPS_DSN="postgresql://pgops:pgops_dev@localhost:5433/pgops_demo"
+export PGOPS_DSN="postgresql://pgops:pgops_dev@localhost:5435/pgops_demo"
 uv run pgops-mcp --selfcheck
 ```

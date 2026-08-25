@@ -214,8 +214,8 @@ Two concerns drove this phase, neither of them about Docker features.
   permitted; the binary is checked by basename so `/bin/bash` cannot slip past a name
   check. An operator who genuinely needs a shell already has `docker exec`.
 - **PHASE-5:** DSN→container matching is by **published host port**, not image name.
-  This machine runs two Postgres containers at once — ours on 5433 and an unrelated
-  project's on 5434. Matching on "the image is postgres" would confidently pick the
+  This machine runs several Postgres containers at once — ours on 5435 and other
+  projects' on 5432/5433/5434. Matching on "the image is postgres" would confidently pick the
   wrong one and then report another project's logs as our database's.
 - **PHASE-5:** Every Docker SDK call goes through `asyncio.to_thread`. The SDK is
   synchronous and `stats(stream=False)` blocks for ~1 second (it samples twice to
@@ -256,7 +256,7 @@ uv run mypy src       # Success: no issues found in 24 source files
 Live dev compose stack:
 
 ```
-dsn_host_port: 5433
+dsn_host_port: 5435
 database_container: pgops_dev_postgres | health: healthy
 compose_projects: {'pgops-mcp': 1, 'appointment': 1}
 postgres containers seen: ['pgops_dev_postgres', 'appointment-langfuse-db-1']   <- picked the right one
@@ -629,7 +629,8 @@ report against the dev database.
   (Phase 4) have something real to find.
 - **PHASE-0:** `docker-compose.yml`: found port 5432 already bound by another local
   Postgres instance on this machine (a real "unfamiliar environment" collision, not a
-  hypothetical) — remapped to host `5433`, added a `pg_isready` healthcheck, named the
+  hypothetical) — remapped to host `5435` (later moved again when another project
+  claimed `5433`), added a `pg_isready` healthcheck, named the
   container so it doesn't collide with the many other same-named `postgres` containers
   already running locally.
 - **PHASE-0:** `pyproject.toml`: `uv_build` needs `[tool.uv.build-backend] module-name`

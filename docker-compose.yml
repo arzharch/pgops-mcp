@@ -1,8 +1,8 @@
 # Dev environment: real Postgres with pg_stat_statements + seeded demo schema.
 # Used by manual testing and as the demo target. Tests use testcontainers instead.
 #
-# Port: host 5433, not 5432 — this dev box already runs other Postgres instances
-# (native service + other project containers) bound to 5432/5434. Mapping to a
+# Port: host 5435, not 5432 — this dev box already runs other Postgres instances
+# (native service + other project containers) bound to 5432/5433/5434. Mapping to a
 # non-default host port and keeping it out of PGOPS_DSN defaults is itself a small
 # "works in a real, already-occupied environment" detail worth remembering.
 
@@ -21,7 +21,7 @@ services:
       - -c
       - pg_stat_statements.track=all
     ports:
-      - "5433:5432"
+      - "5435:5432"
     volumes:
       - ./dev/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:

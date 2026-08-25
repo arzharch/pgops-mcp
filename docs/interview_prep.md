@@ -127,7 +127,8 @@ A: `docker-compose.yml` originally mapped Postgres to host port 5432. On this ac
 dev machine that port was already bound by an unrelated native Postgres service —
 `docker compose up` would have failed or silently attached to the wrong instance.
 Caught it by checking `netstat` before assuming the default would work, remapped to
-5433, named the container explicitly (this machine has a dozen same-named `postgres`
+5435 (and later moved again when another project claimed 5433 — the point is the
+*process*, not the specific number), named the container explicitly (this machine has a dozen same-named `postgres`
 containers from other projects), and added a `pg_isready` healthcheck so `docker compose
 up -d` returning success actually means "seeded and queryable," not just "process
 started." Separately, `uv sync` failed on first run: `uv_build` infers the importable
@@ -952,8 +953,8 @@ fields are invisible until someone deliberately adds them. I also return mount
 **Q: How do you know which container is the database?**
 A: By **published host port**, matched against the DSN — not by image name. This is one
 of those things where the naive version works on a clean machine and fails on a real one.
-My dev box runs two Postgres containers simultaneously: mine on host port 5433 and an
-unrelated project's on 5434. "Find the container whose image is postgres" would
+My dev box runs several Postgres containers simultaneously: mine on host port 5435 and
+other projects' on 5432/5433/5434. "Find the container whose image is postgres" would
 confidently pick whichever came back first and then report *another project's* logs and
 memory pressure as my database's — wrong in a way that looks authoritative.
 

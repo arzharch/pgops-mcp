@@ -168,8 +168,8 @@ def _container_info(container: Any, dsn_port: int | None) -> ContainerInfo:
     labels = container.labels or {}
     ports = _published_ports(attrs)
     # Match the container serving our DSN by *published host port*, not by image name.
-    # This machine runs several postgres containers at once (5433 is ours, 5434 belongs
-    # to an unrelated project); matching on "the image is postgres" would confidently
+    # This machine runs several postgres containers at once (5435 is ours, 5432/5433/5434
+    # belong to other projects); matching on "the image is postgres" would confidently
     # pick the wrong one and then report another project's logs as our database's.
     serves = dsn_port is not None and any(p["host_port"] == dsn_port for p in ports)
     return ContainerInfo(

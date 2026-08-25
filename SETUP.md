@@ -82,11 +82,11 @@ docker compose up -d        # Postgres 16 + pg_stat_statements + ~1.2M-row order
 DSN for the dev stack:
 
 ```
-postgresql://pgops:pgops_dev@localhost:5433/pgops_demo
+postgresql://pgops:pgops_dev@localhost:5435/pgops_demo
 ```
 
-Note the port is **5433**, not 5432 — chosen deliberately because 5432 was already bound
-by an unrelated native Postgres on the original dev machine.
+Note the port is **5435**, not 5432 — chosen deliberately because lower ports were
+already bound by other Postgres instances on the original dev machine.
 
 ---
 
@@ -227,7 +227,7 @@ Postgres unreachable or credentials wrong. Test the DSN directly:
 The suite uses testcontainers — Docker must be running. On Windows, make sure Docker
 Desktop is up before `uv run pytest`.
 
-**Port 5433 already in use (dev stack)**
+**Port 5435 already in use (dev stack)**
 Another container is bound there. Either stop it or edit `docker-compose.yml`.
 
 **Audit log location**

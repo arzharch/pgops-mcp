@@ -50,15 +50,15 @@ This starts Postgres 16 with `pg_stat_statements` enabled and ~1.2M rows of demo
 Your DSN is:
 
 ```
-postgresql://pgops:pgops_dev@localhost:5433/pgops_demo
+postgresql://pgops:pgops_dev@localhost:5435/pgops_demo
 ```
 
-(Note port **5433**, not 5432.)
+(Note port **5435**, not 5432.)
 
 ## Step 4 — Sanity check before wiring anything
 
 ```bash
-uv run pgops-mcp --selfcheck --dsn "postgresql://pgops:pgops_dev@localhost:5433/pgops_demo"
+uv run pgops-mcp --selfcheck --dsn "postgresql://pgops:pgops_dev@localhost:5435/pgops_demo"
 ```
 
 Expected:
@@ -86,7 +86,7 @@ Find your client's MCP config file and add:
     "pgops": {
       "command": "uv",
       "args": ["run", "--directory", "/absolute/path/to/pgops-mcp", "pgops-mcp"],
-      "env": { "PGOPS_DSN": "postgresql://pgops:pgops_dev@localhost:5433/pgops_demo" }
+      "env": { "PGOPS_DSN": "postgresql://pgops:pgops_dev@localhost:5435/pgops_demo" }
     }
   }
 }

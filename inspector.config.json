@@ -4,7 +4,7 @@
       "command": "uv",
       "args": ["run", "pgops-mcp"],
       "env": {
-        "PGOPS_DSN": "postgresql://pgops:pgops_dev@localhost:5433/pgops_demo"
+        "PGOPS_DSN": "postgresql://pgops:pgops_dev@localhost:5435/pgops_demo"
       }
     }
   }
