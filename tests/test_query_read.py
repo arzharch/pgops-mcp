@@ -41,6 +41,19 @@ async def test_write_statement_refused(conn_manager: ConnectionManager, config: 
 async def test_runaway_query_is_cancelled_by_timeout(
     conn_manager: ConnectionManager, config: PgopsConfig
 ) -> None:
+    # pg_sleep is volatile (it changes server timing state), so the volatility check
+    # refuses it before the timeout can. Use a genuinely stable slow construct:
+    # a large recursive CTE burns CPU without touching any function.
     with pytest.raises(PgopsError) as exc_info:
-        await query_read(conn_manager, config, "SELECT pg_sleep(2)", timeout_ms=200)
+        await query_read(
+            conn_manager,
+            config,
+            """
+            WITH RECURSIVE t(n) AS (
+                SELECT 1 UNION ALL SELECT n+1 FROM t WHERE n < 100000000
+            )
+            SELECT count(*) FROM t
+            """,
+            timeout_ms=200,
+        )
     assert exc_info.value.code is ErrorCode.QUERY_TIMEOUT

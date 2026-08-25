@@ -1,0 +1,32 @@
+feat(safety): volatile-function detection - closes the ADR-001 lexer gap
+
+The classifier is a lexer: it can prove a statement contains no write DML
+keyword, but 'SELECT my_func()' is lexically a read even when my_func executes
+an INSERT. This was ADR-001's named gap, caught only one layer down by the
+readonly-pool GUC at execution time.
+
+New function_safety.py: for statements classified read, extract every function
+reference via sqlparse grouping (not flat-text regex - CTE definitions parse as
+Function tokens and a regex cannot distinguish them; the walk skips Functions
+followed by AS) and check each against pg_proc.provolatile:
+
+- immutable/stable -> safe, statement proceeds
+- volatile         -> CLASSIFICATION_REFUSED naming the function and its
+                      volatility, before execution
+- unknown          -> treated as volatile (deny-by-default extends to functions)
+
+Runs in query_read after classification and before execution; the classifier
+stays a pure function of SQL text so its table-driven tests need no database.
+One extra round trip per read call.
+
+Implementation notes worth keeping:
+- provolatile is Postgres's internal "char" type: asyncpg decodes it as bytes,
+  not str. Cast to ::text in SQL - the same trap that broke schema.inspect in
+  the Phase 1 review.
+- The timeout test used pg_sleep, which is itself volatile; replaced with a
+  recursive CTE so the timeout path still has a legitimate slow read to cancel.
+
+15 new tests: pure extraction cases plus live catalog behavior against real
+Postgres, including proof that refusal happens before the function executes.
+
+Gates: 387 passed (-m "not live and not slow"), ruff clean, mypy strict clean.

@@ -19,6 +19,7 @@ from pgops.classifier import classify
 from pgops.config import PgopsConfig
 from pgops.connections import ConnectionManager
 from pgops.errors import ErrorCode, PgopsError
+from pgops.function_safety import assert_safe_read_functions
 from pgops.serialize import serialize_record
 from pgops.timing import Elapsed
 
@@ -66,6 +67,9 @@ async def query_read(
             # bind parameter — it's a SET, not a query), so the cast is kept as an
             # explicit, local guarantee rather than an inherited assumption.
             await conn.execute(f"SET LOCAL statement_timeout = {int(resolved_timeout)}")
+            # The lexer can't see inside function bodies (ADR-001's named gap): check
+            # every referenced function against pg_proc.provolatile before executing.
+            await assert_safe_read_functions(conn, sql)
             cursor = await conn.cursor(sql)
             # fetch limit+1 so we can report `truncated` without a second round trip
             records = await cursor.fetch(resolved_limit + 1)
