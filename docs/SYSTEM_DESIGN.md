@@ -130,25 +130,34 @@ flowchart TB
 
 ```mermaid
 flowchart LR
-    subgraph Now["v0.1 — single-node local (shipped)"]
+    subgraph T1["Tier 1 · Local (shipped)"]
         direction TB
-        C1["One MCP client"] --> S1["One pgops-mcp process"] --> D1["One Postgres"]
-        S1 --> A1["Local audit file"]
+        C1["One MCP client<br/>(stdio)"] --> S1["One pgops-mcp process"] --> D1["User's Postgres"]
+        S1 --> A1["Local audit file<br/>~/.pgops/audit.jsonl"]
     end
 
-    subgraph Possible["Designed-for, not built (deliberate)"]
+    subgraph T2["Tier 2 · Shared team server (designed for)"]
         direction TB
-        C2["N clients over HTTP+JWT"] --> S2["Stateless server instances"] --> D2["Per-session DSNs"]
-        S2 --> A2["Centralized log pipeline"]
+        C2a["Agent A"] & C2b["Agent B"] & C2c["Agent C"] -->|"HTTP + JWT<br/>scoped tokens"| S2["pgops-mcp instance"]
+        S2 --> D2["Shared dev/staging Postgres<br/>+ per-session DSN isolation"]
+        S2 --> R[("Redis: plan cache,<br/>confirmation tokens")]
+        S2 --> A2["Centralized audit sink<br/>(OTel / log pipeline)"]
     end
 
-    Now -.->|"same core;<br/>add per-DSN sessions +<br/>shared audit sink"| Possible
+    subgraph T3["Tier 3 · Hosted multi-tenant (boundary, not roadmap)"]
+        direction TB
+        C3["Many customers"] --> S3["Per-tenant isolation<br/>network, keys, compliance"] --> D3["Tenant databases"]
+    end
+
+    T1 ==>|"add: DSN isolation,<br/>audit sink, external state,<br/>rate limits"| T2
+    T2 -.->|"different product:<br/>compliance surface,<br/>per-tenant Docker boundaries"| T3
 ```
 
 ### Honest scaling assessment
 
 This is **a local-first developer tool, not a horizontally-scaled service** — and that
-is a design decision, not an omission:
+is a design decision, not an omission. The full tier analysis lives in
+[ADR-006](adr/ADR-006.md); the summary:
 
 | Dimension | Status | Why |
 |---|---|---|
@@ -158,15 +167,22 @@ is a design decision, not an omission:
 | Horizontal scale-out | ❌ not built | plan cache and token store are **in-memory**, so instances can't share state |
 | High availability | ❌ not applicable | it's an operator's sidecar, not a service with an SLA |
 
-What the design *does* give you when demand appears:
+**The case for keeping Tier 1 as the default** — worth stating because it's a security
+argument, not a limitation: when the database is local, the safest place for the operator
+credential is the user's own machine, under their own account, with **no network listener
+at all**. Moving to Tier 2 buys team collaboration at the price of a network attack
+surface that must then be defended forever. The transport-bound auth design (stdio needs
+no auth *because* there is no remote caller; HTTP refuses to start without one) means
+that trade gets made deliberately per deployment rather than being forced on everyone.
 
-- **Transport-agnostic tool layer** (ADR-002): HTTP already shipped behind JWT auth;
-  adding Streamable HTTP multi-client support doesn't touch tools.
-- **Stateless-friendly auth**: RS256 public-key verification means any instance can
-  verify tokens with no shared secret.
-- **The two real blockers are named**: per-session DSN isolation and a shared audit
-  sink. Both are listed as known gaps rather than quietly assumed away.
+What the design already gives the scale-up path:
 
-For its actual job — one engineer pointing AI agents at their own database safely —
-the current topology is correct, and pretending otherwise would add distributed-systems
-failure modes to a tool whose whole value proposition is being trustworthy.
+- **Transport-agnostic tool layer** (ADR-002): HTTP shipped behind JWT auth in Phase 6b;
+  multi-client support doesn't touch tools.
+- **Stateless-friendly auth**: RS256 public-key verification — any instance verifies
+  tokens with no shared secret.
+- **Content-addressed ephemeral state**: tokens are bound to `sha256(sql)` and plans to
+  checksums with TTLs, so moving them to Redis later is mechanical.
+
+The two real blockers are named deliverables now (ADR-006): per-session DSN isolation
+and a centralized audit sink. Both are gaps by decision, not oversight.

@@ -189,7 +189,8 @@ If #4 executes instead of refusing, stop and check you're running the right serv
 
 pgops-mcp is a **local-first developer tool**, not a horizontally-scaled service. That's
 a deliberate design decision, documented honestly in
-[`docs/SYSTEM_DESIGN.md` §4](docs/SYSTEM_DESIGN.md#4-deployment-topology---what-scales-and-what-doesnt):
+[`docs/SYSTEM_DESIGN.md` §4](docs/SYSTEM_DESIGN.md#4-deployment-topology---what-scales-and-what-doesnt)
+and [ADR-006](docs/adr/ADR-006.md):
 
 - ✅ One engineer, one or a few databases, one or more MCP clients — the intended use,
   fully supported.
@@ -199,10 +200,16 @@ a deliberate design decision, documented honestly in
   but every caller shares one connection manager; plan/token state is in-memory so
   instances can't share it.
 
-The HTTP transport + JWT auth that shipped in Phase 6b is what makes the scale-up path
-*possible* (stateless verification, no shared secret), but per-session DSN isolation and
-a centralized audit sink are named gaps, not shipped features. Don't deploy this as a
-multi-tenant service expecting isolation it doesn't provide.
+**Why local-first is the right default (a security argument, not a limitation):** when
+the database is local, the operator credential lives on the user's own machine, under
+their own account, with no network listener at all. A shared server buys team
+collaboration at the price of a network attack surface that must be defended forever.
+The transport-bound auth design means each deployment makes that trade deliberately.
+
+If you do need the team-server tier, ADR-006 names exactly what must be built first:
+per-session DSN isolation, a centralized audit sink, externalized plan/token state, and
+per-subject rate limits. Don't deploy this as a multi-tenant service expecting isolation
+it doesn't provide.
 
 ---
 

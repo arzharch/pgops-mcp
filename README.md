@@ -103,7 +103,7 @@ Add to Claude Desktop:
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — system design + trade-offs
 - [`docs/SYSTEM_DESIGN.md`](docs/SYSTEM_DESIGN.md) — rendered architecture diagrams (Mermaid — renders natively on GitHub/GitLab/VS Code; importable into Lucidchart, draw.io, or Mermaid Live via [mermaid.live](https://mermaid.live))
 - [`docs/TOOLS.md`](docs/TOOLS.md) — full tool catalog with schemas & examples
-- [`docs/adr/`](docs/adr/) — architecture decision records
+- [`docs/adr/`](docs/adr/) — architecture decision records (incl. [ADR-006](docs/adr/ADR-006.md): the three-tier scaling path)
 - [`docs/flow.md`](docs/flow.md) — living progress log
 - [`docs/interview_prep.md`](docs/interview_prep.md) — growing interview Q&A
 
