@@ -101,6 +101,7 @@ Add to Claude Desktop:
 - [`docs/PRD.md`](docs/PRD.md) — what & why, goals, non-goals
 - [`docs/SPEC.md`](docs/SPEC.md) — phased technical spec with hard gates
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — system design + trade-offs
+- [`docs/SYSTEM_DESIGN.md`](docs/SYSTEM_DESIGN.md) — rendered architecture diagrams (Mermaid — renders natively on GitHub/GitLab/VS Code; importable into Lucidchart, draw.io, or Mermaid Live via [mermaid.live](https://mermaid.live))
 - [`docs/TOOLS.md`](docs/TOOLS.md) — full tool catalog with schemas & examples
 - [`docs/adr/`](docs/adr/) — architecture decision records
 - [`docs/flow.md`](docs/flow.md) — living progress log
