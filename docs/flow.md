@@ -46,6 +46,32 @@ uv run ruff check .              # All checks passed!
 uv run mypy src                  # Success: no issues found in 33 source files
 ```
 
+Live verification against a local Jaeger (`docker run --rm -p 4317:4317 -p 16686:16686
+jaegertracing/all-in-one`) with the server on HTTP transport:
+
+```
+query.read over the wire   -> span tool.query_read_tool, verdict=executed, real durations
+bad column (PgopsError)    -> verdict=refused, pgops.error_code=INVALID_ARGUMENT
+docker stop postgres       -> /ready 503 while /health stays alive; recovers after start
+Jaeger down                -> export warnings in log; every tool call still succeeds
+```
+
+One gap found by that live pass and closed immediately: **scope denials were invisible.**
+`ScopeEnforcement` runs before the tool body, so a denied call produced a log line but no
+span and no metric — despite being one of the most operationally interesting signals
+(misconfigured agent, rotated token missing scopes, probing). Fixed in the same phase:
+
+- **PHASE-6d · ObservabilityMiddleware, registered outermost.** Wraps every tool call
+  including the scope check. Verdict taxonomy is deliberately four values: `executed`,
+  `refused` (the tool said no), `denied` (authorization said no before the tool ran),
+  `failed` (unexpected exception). "The tool refused" and "you may not ask" are different
+  incidents with different responders.
+- **PHASE-6d · metrics emitted once per call.** Only the boundary's span emits
+  `pgops.tool.calls`/`pgops.tool.duration`; the middleware span is span-only for calls
+  that reach the tool, and emits the metric itself only for denials — nested spans
+  double-counting traffic would be worse than no metrics because it lies about volume.
+  The counter now also carries a `caller` dimension (token subject or `local`).
+
 ---
 
 The last tool from FR-3, and deliberately the last: "rollback" sounds like an undo

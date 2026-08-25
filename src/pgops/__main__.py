@@ -25,7 +25,7 @@ from pgops.config import PgopsConfig
 from pgops.connections import ConnectionManager
 from pgops.errors import PgopsError, tool_boundary
 from pgops.guardrails import ConfirmationTokenStore
-from pgops.middleware import ScopeEnforcement
+from pgops.middleware import ObservabilityMiddleware, ScopeEnforcement
 from pgops.migrations.rollback import rollback_migration
 from pgops.observability import init_observability, run_health_endpoints
 from pgops.prompts import (
@@ -92,6 +92,10 @@ def build_server(config: PgopsConfig, conn_manager: ConnectionManager, auth: Any
     # against a single server-wide value, so without this middleware a pgops:read token
     # can call query.write. Only added under auth: over stdio there is no token to
     # check and every call would be denied for lacking a scope nobody issued.
+    #
+    # ObservabilityMiddleware is registered FIRST (outermost) so its span wraps the
+    # scope check too — authorization denials are spans/metrics, not just log lines.
+    mcp.add_middleware(ObservabilityMiddleware())
     if auth is not None:
         mcp.add_middleware(ScopeEnforcement())
 

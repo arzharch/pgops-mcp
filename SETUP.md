@@ -213,6 +213,45 @@ it doesn't provide.
 
 ---
 
+## 7. Observability (optional)
+
+The server emits OpenTelemetry traces + metrics and serves liveness/readiness endpoints.
+Everything is **off by default** — with no env vars set there is zero overhead beyond a
+few dict lookups, and telemetry can never break a tool call.
+
+```bash
+# install the optional deps
+uv sync --extra otel
+
+# stand up a local trace backend (Jaeger all-in-one, OTLP gRPC on 4317)
+docker run --rm -d --name pgops-jaeger -p 4317:4317 -p 16686:16686 \
+  jaegertracing/all-in-one:latest
+
+# run the server with telemetry + health endpoints
+export PGOPS_OTEL_ENDPOINT=http://localhost:4317
+export PGOPS_HEALTH_PORT=8080
+uv run pgops-mcp --transport http --host 127.0.0.1 --port 8001 \
+  --public-key keys/demo/pgops_public.pem
+```
+
+Then:
+
+- **Traces:** open http://localhost:16686, pick service `pgops-mcp`. Every tool call is
+  one span with `pgops.verdict` (`executed` / `refused` / `denied` / `failed`) and, on
+  refusals, `pgops.error_code`. Scope denials are spans too — a spike usually means a
+  misconfigured agent or a rotated token missing its scopes.
+- **Metrics:** `pgops.tool.calls` (by tool, verdict, caller), `pgops.tool.duration`,
+  `pgops.pool.timeouts`, `pgops.db.up`.
+- **Health:** `GET :8080/health` (liveness — restart me if this fails) and
+  `GET :8080/ready` (readiness — Postgres reachable right now; returns 503 when it
+  isn't). Wire these into a compose healthcheck or process manager.
+
+If Jaeger/collector is down, export failures are logged warnings; tool calls are
+unaffected. The audit log remains the system of record — this layer is the *operational*
+view (latency, error rates), complementary to the *forensic* view (who did what).
+
+---
+
 ## Troubleshooting
 
 **`DSN_MISSING` on startup**

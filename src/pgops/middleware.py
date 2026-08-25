@@ -113,3 +113,56 @@ class ScopeEnforcement(Middleware):
         tools = await call_next(context)
         caller = current_caller()
         return [t for t in tools if caller.may_call(t.name)]
+
+
+class ObservabilityMiddleware(Middleware):
+    """Outermost span + metric for every tool call, *including* ones that never reach
+    a tool body.
+
+    Why this exists: ScopeEnforcement runs before the tool runs, so a denied call
+    produced a log line and nothing else — invisible to dashboards. But permission
+    denials are among the most operationally interesting signals an MCP server emits:
+    a spike usually means a misconfigured agent, a token that rotated without its
+    scopes being re-issued, or something probing what it can reach.
+
+    Verdict taxonomy (deliberately four values, not two):
+      - executed — tool ran and returned success
+      - refused  — the tool itself said no (PgopsError: bad SQL, missing confirmation)
+      - denied   — authorization said no before the tool ran (scope failure)
+      - failed   — unexpected exception (bug or infrastructure)
+
+    "The tool refused" and "you may not ask" are different incidents with different
+    responders; collapsing them into one bucket would hide exactly which layer is
+    rejecting traffic.
+
+    Ordering matters: this must be registered BEFORE ScopeEnforcement so its span wraps
+    the scope check too. Metrics are emitted here only when the inner boundary never
+    ran (denials); otherwise the boundary's span owns them — no double counting.
+    """
+
+    async def on_call_tool(self, context: MiddlewareContext[Any], call_next: Any) -> Any:
+        from pgops.observability import ToolSpan
+
+        tool = context.message.name
+        caller = current_caller()
+        with ToolSpan(tool, emit_metrics=False) as span:
+            span.set_caller(caller.subject)
+            try:
+                return await call_next(context)
+            except ToolError:
+                # ToolError here is either a scope denial (ScopeEnforcement below us)
+                # or a refusal surfaced by the framework. Distinguish by checking
+                # whether the caller was allowed at all.
+                if not caller.may_call(tool):
+                    span.set_verdict("denied")
+                    from pgops.observability import record_denial
+
+                    record_denial(tool, caller.subject)
+                else:
+                    span.set_verdict("refused")
+                raise
+            # Unexpected exceptions propagate unchanged — FastMCP renders them; the
+            # span still records the failure verdict on the way out.
+
+    async def on_list_tools(self, context: MiddlewareContext[Any], call_next: Any) -> Any:
+        return await call_next(context)

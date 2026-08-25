@@ -161,14 +161,20 @@ class ToolSpan:
             span.set_verdict("executed", classification="write", rows=3)
 
     If OTel is not initialized, everything is a cheap no-op.
+
+    Metrics are emitted only when `emit_metrics=True` — the flag the *outermost*
+    wrapper passes. Nested spans (middleware outside, boundary inside) would otherwise
+    double-count every call in `pgops.tool.calls`.
     """
 
-    def __init__(self, tool_name: str) -> None:
+    def __init__(self, tool_name: str, *, emit_metrics: bool = False) -> None:
         self._tool = tool_name
         self._start = time.perf_counter()
         self._span: Any = None
         self._verdict = "unknown"
         self._attrs: dict[str, str | int | float | bool] = {}
+        self._emit_metrics = emit_metrics
+        self._caller: str | None = None
 
     def __enter__(self) -> Self:
         if _tracer is not None:
@@ -181,6 +187,10 @@ class ToolSpan:
         for key, value in attrs.items():
             if isinstance(value, (str, int, float, bool)):
                 self._attrs[f"pgops.{key}"] = value
+
+    def set_caller(self, caller: str) -> None:
+        """Attribute this call to a principal (token subject or 'local')."""
+        self._caller = caller
 
     def record_exception(self, exc: BaseException) -> None:
         if self._span is not None:
@@ -195,13 +205,18 @@ class ToolSpan:
         duration_ms = (time.perf_counter() - self._start) * 1000
 
         # Metrics are recorded even without a span — they're the cheaper signal and
-        # the one dashboards are built on.
-        calls = _counters.get("calls")
-        if calls is not None:
-            calls.add(1, {"tool": self._tool, "verdict": self._verdict})
-        hist = _histograms.get("duration")
-        if hist is not None:
-            hist.record(duration_ms, {"tool": self._tool})
+        # the one dashboards are built on. Only the outermost span emits, so nested
+        # instrumentation doesn't double-count.
+        if self._emit_metrics:
+            calls = _counters.get("calls")
+            if calls is not None:
+                attrs: dict[str, str] = {"tool": self._tool, "verdict": self._verdict}
+                if self._caller is not None:
+                    attrs["caller"] = self._caller
+                calls.add(1, attrs)
+            hist = _histograms.get("duration")
+            if hist is not None:
+                hist.record(duration_ms, {"tool": self._tool})
 
         if self._span is not None:
             self._span.set_attribute("pgops.verdict", self._verdict)
@@ -217,6 +232,15 @@ def record_pool_timeout() -> None:
     counter = _counters.get("pool_timeouts")
     if counter is not None:
         counter.add(1)
+
+
+def record_denial(tool: str, caller: str) -> None:
+    """Record an authorization denial. Called from ScopeEnforcement so that permission
+    failures show up in `pgops.tool.calls` with verdict='denied' even though the call
+    never reached tool_boundary."""
+    counter = _counters.get("calls")
+    if counter is not None:
+        counter.add(1, {"tool": tool, "verdict": "denied", "caller": caller})
 
 
 def set_db_up(up: bool) -> None:

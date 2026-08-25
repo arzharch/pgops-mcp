@@ -80,7 +80,9 @@ def tool_boundary[**P](
         # One span per tool call, created here so every tool is instrumented by
         # construction rather than by remembering to decorate each one. Refusals are
         # spans too: a spike in CONFIRMATION_REQUIRED is an operational signal.
-        with ToolSpan(func.__name__) as span:
+        # emit_metrics=True: this is the innermost-and-usually-outermost wrapper; the
+        # middleware-level ObservabilitySpan skips metrics when it sees this one ran.
+        with ToolSpan(func.__name__, emit_metrics=True) as span:
             try:
                 result = await func(*args, **kwargs)
             except PgopsError as exc:

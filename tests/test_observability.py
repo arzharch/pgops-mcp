@@ -91,3 +91,63 @@ async def test_health_endpoints_skip_without_port() -> None:
         return True
 
     await run_health_endpoints(check)  # returns, does not serve
+
+
+# --- middleware-level observability ---------------------------------------------------
+
+
+async def test_denials_are_recorded_as_metrics() -> None:
+    """A scope denial never reaches tool_boundary, so without this the call was
+    invisible to dashboards. record_denial is what ScopeEnforcement's sibling
+    ObservabilityMiddleware calls; it must count with verdict='denied'."""
+    import pgops.observability as obs
+
+    counter = _FakeCounter()
+    obs._counters["calls"] = counter  # type: ignore[assignment]
+    try:
+        obs.record_denial("query.write", "demo-agent")
+    finally:
+        obs._counters.pop("calls", None)
+    assert counter.adds == [(1, {"tool": "query.write", "verdict": "denied", "caller": "demo-agent"})]
+
+
+async def test_only_outermost_span_emits_metrics() -> None:
+    """Middleware span (outermost, emit_metrics=False) + boundary span (inner,
+    emit_metrics=True) must produce exactly one metric per call — nested spans
+    double-counting is worse than no metrics because it lies about traffic volume."""
+    import pgops.observability as obs
+    from pgops.observability import ToolSpan
+
+    counter = _FakeCounter()
+    hist = _FakeHistogram()
+    obs._counters["calls"] = counter  # type: ignore[assignment]
+    obs._histograms["duration"] = hist  # type: ignore[assignment]
+    try:
+        # Simulate the real nesting: middleware wraps boundary.
+        with (
+            ToolSpan("query.read", emit_metrics=False),
+            ToolSpan("query_read_tool", emit_metrics=True) as inner,
+        ):
+            inner.set_verdict("executed")
+    finally:
+        obs._counters.pop("calls", None)
+        obs._histograms.pop("duration", None)
+    assert len(counter.adds) == 1
+    assert counter.adds[0][1]["tool"] == "query_read_tool"
+    assert len(hist.records) == 1
+
+
+class _FakeCounter:
+    def __init__(self) -> None:
+        self.adds: list[tuple[int, dict[str, str]]] = []
+
+    def add(self, amount: int, attrs: dict[str, str] | None = None) -> None:
+        self.adds.append((amount, attrs or {}))
+
+
+class _FakeHistogram:
+    def __init__(self) -> None:
+        self.records: list[tuple[float, dict[str, str]]] = []
+
+    def record(self, value: float, attrs: dict[str, str] | None = None) -> None:
+        self.records.append((value, attrs or {}))
