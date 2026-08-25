@@ -195,11 +195,13 @@ async def test_full_verdict_taxonomy_over_the_wire(
         assert refusal.structured_content["error"]["code"] == "CLASSIFICATION_REFUSED"
 
     # failed: unexpected exception surfaces as INTERNAL_ERROR, internals masked.
-    # A nonexistent function forces asyncpg to raise something the boundary's
-    # PostgresError handler does not anticipate.
+    # A nonexistent *table* forces asyncpg to raise something the boundary's
+    # PostgresError handler does not anticipate. (A nonexistent function no longer
+    # works here: the volatility gate now refuses unknown functions before execution,
+    # which is the correct behavior — so this exercises the truly-unanticipated path.)
     async with Client(live_server.url, auth=reader) as client:
         failed = await client.call_tool(
-            "query.read", {"sql": "SELECT definitely_not_a_fn()"}
+            "query.read", {"sql": "SELECT * FROM definitely_not_a_table_xyz"}
         )
         content = failed.structured_content or {}
         code = content.get("error", {}).get("code", "")

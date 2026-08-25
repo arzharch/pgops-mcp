@@ -35,6 +35,7 @@ from pgops.prompts import (
     plan_safe_migration,
     review_index_health,
 )
+from pgops.replay import print_report, run_replay
 from pgops.resources import (
     audit_resource,
     config_resource,
@@ -495,6 +496,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     sub.add_parser("scopes", help="show which scope each tool requires")
 
+    replay = sub.add_parser(
+        "replay", help="replay (or dry-run) executed statements from an audit log"
+    )
+    replay.add_argument("audit_log", help="path to the audit JSONL file")
+    replay.add_argument(
+        "--execute",
+        action="store_true",
+        help="actually re-run the statements (DESTRUCTIVE; asks for confirmation)",
+    )
+    replay.add_argument("--actor", default=None, help="only replay entries by this subject")
+    replay.add_argument("--limit", type=int, default=None, help="only the last N entries")
+
     return parser.parse_args(argv)
 
 
@@ -556,6 +569,14 @@ def _run_issue_token(args: argparse.Namespace) -> None:
         print("this token cannot write or modify containers", file=sys.stderr)
 
 
+def _replay_confirm() -> bool:
+    answer = input(
+        "Replaying EXECUTES every previously-executed statement against the target "
+        "database.\nThis is destructive and non-idempotent. Type REPLAY to continue: "
+    )
+    return answer.strip() == "REPLAY"
+
+
 def main() -> None:
     args = parse_args()
 
@@ -567,6 +588,23 @@ def main() -> None:
         return
     if args.command == "scopes":
         print(describe_scopes())
+        return
+    if args.command == "replay":
+        configure_logging(logging.WARNING)
+        config = PgopsConfig.from_env(dsn=args.dsn, audit_path=Path(args.audit_log))
+        if args.execute and not _replay_confirm():
+            print("aborted.")
+            return
+        report = asyncio.run(
+            run_replay(
+                config,
+                Path(args.audit_log),
+                execute=args.execute,
+                actor_filter=args.actor,
+                limit=args.limit,
+            )
+        )
+        print_report(report)
         return
 
     configure_logging(logging.DEBUG if args.verbose else logging.INFO)

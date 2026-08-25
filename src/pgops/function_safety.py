@@ -71,9 +71,12 @@ def function_references(sql: str) -> set[str]:
     def walk(token: Any, in_with_defs: bool = False) -> None:
         tokens = getattr(token, "tokens", [])
         # Does this group start with WITH? Then top-level Identifier lists are CTE
-        # definitions whose names parse as Functions.
+        # definitions whose names parse as Functions. Whitespace (including leading
+        # indentation) must be skipped before inspecting the first meaningful tokens —
+        # an indented statement can begin with a dozen whitespace tokens.
+        non_ws = [c for c in tokens if not getattr(c, "is_whitespace", False)]
         starts_with_with = any(
-            str(c).strip().upper() == "WITH" for c in tokens[:3] if not getattr(c, "is_whitespace", False)
+            str(c).strip().upper() == "WITH" for c in non_ws[:3]
         ) or (in_with_defs and type(token).__name__ != "Statement")
         for i, child in enumerate(tokens):
             ctype = type(child).__name__
