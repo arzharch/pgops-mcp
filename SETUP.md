@@ -1,0 +1,212 @@
+# Setup Guide
+
+Complete setup for pgops-mcp — from a clean machine to a working MCP server in Claude
+Desktop, Cursor, VS Code, or the MCP Inspector.
+
+---
+
+## Prerequisites
+
+| Requirement | Version | Notes |
+|---|---|---|
+| Python | 3.12+ | managed automatically by `uv` if missing |
+| [uv](https://docs.astral.sh/uv/) | latest | `pip install uv` or `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
+| PostgreSQL | 16+ | local, Docker, or remote — anything reachable via a DSN |
+| Node.js | 18+ | only needed for the MCP Inspector (optional) |
+| Docker | any recent | only needed for the dev seed stack and `env.*` tools |
+
+---
+
+## 1. Install
+
+```bash
+git clone <repo-url> pgops-mcp
+cd pgops-mcp
+uv sync          # creates .venv and installs everything, including dev deps
+```
+
+Verify the install:
+
+```bash
+uv run pytest -q            # 371 tests; needs Docker for testcontainers
+uv run ruff check .
+uv run mypy src
+```
+
+If you don't want to run the full suite, skip straight to step 2.
+
+---
+
+## 2. Configure
+
+Copy the example env file and point it at your database:
+
+```bash
+cp .env.example .env
+# then edit .env and set PGOPS_DSN
+```
+
+The only **required** variable is `PGOPS_DSN`. Everything else has a safe default — see
+the comments in `.env.example` for what each knob does and when to change it.
+
+> `.env` is gitignored. Never commit real credentials.
+
+### Quick sanity check
+
+```bash
+uv run pgops-mcp --selfcheck --dsn "postgresql://user:pass@localhost:5432/mydb"
+```
+
+Expected output:
+
+```
+readonly pool: OK
+tables in public schema: 3
+  - customers: ~30000 rows, ...
+  - orders: ~1200000 rows, ...
+  - products: ~500 rows, ...
+```
+
+If this fails, the DSN is wrong or Postgres isn't reachable — fix that before continuing.
+
+---
+
+## 3. Run against the seeded dev stack (optional)
+
+If you don't have a database handy, spin up the demo one:
+
+```bash
+docker compose up -d        # Postgres 16 + pg_stat_statements + ~1.2M-row orders table
+```
+
+DSN for the dev stack:
+
+```
+postgresql://pgops:pgops_dev@localhost:5433/pgops_demo
+```
+
+Note the port is **5433**, not 5432 — chosen deliberately because 5432 was already bound
+by an unrelated native Postgres on the original dev machine.
+
+---
+
+## 4. Connect a client
+
+### Claude Desktop / Cursor / VS Code (stdio)
+
+Add to your client's MCP config (e.g. `claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "pgops": {
+      "command": "uv",
+      "args": ["run", "--directory", "/absolute/path/to/pgops-mcp", "pgops-mcp"],
+      "env": {
+        "PGOPS_DSN": "postgresql://user:pass@localhost:5432/mydb"
+      }
+    }
+  }
+}
+```
+
+Use an absolute path for `--directory`. Restart the client after editing.
+
+Environment variables from `.env` are **not** loaded automatically under stdio — the
+client spawns the process with its own environment, so pass `PGOPS_DSN` in the `env`
+block as shown above.
+
+### MCP Inspector
+
+```bash
+npx @modelcontextprotocol/inspector --config inspector.config.json
+```
+
+This opens the web UI preconfigured to launch pgops-mcp over stdio with the dev-stack
+DSN. Edit `inspector.config.json` to point at a different database.
+
+CLI mode (no browser):
+
+```bash
+npx @modelcontextprotocol/inspector --cli --config inspector.config.json --server pgops --method tools/list
+npx @modelcontextprotocol/inspector --cli --config inspector.config.json --server pgops \
+  --method tools/call --tool-name query.read --tool-arg sql="SELECT count(*) FROM orders"
+```
+
+### HTTP transport (remote agents)
+
+stdio has no auth because there's no remote caller. HTTP does, so it refuses to start
+without a key:
+
+```bash
+# 1. Generate an RS256 keypair
+uv run pgops-mcp keygen
+
+# 2. Mint a token for an agent (read-only by default)
+uv run pgops-mcp issue-token --subject my-agent
+uv run pgops-mcp issue-token --subject deploy-bot --scope pgops:read --scope pgops:write
+
+# 3. Start the server
+uv run pgops-mcp --transport http --public-key ~/.pgops/keys/pgops_public.pem
+```
+
+The server holds only the **public** key — it can verify tokens but never mint them.
+Binds `127.0.0.1` by default; pass `--host 0.0.0.0` explicitly if you really mean to
+expose it.
+
+Scope reference:
+
+```bash
+uv run pgops-mcp scopes
+```
+
+| Scope | Tools |
+|---|---|
+| `pgops:read` | schema.inspect, query.read, query.explain, db.health, index.advise, migration.plan, migration.history, env.*, container.logs/stats |
+| `pgops:write` | query.write, migration.apply, migration.rollback |
+| `pgops:admin` | container.restart, container.exec |
+
+A tool with no scope entry requires `admin` — deny by default.
+
+---
+
+## 5. Verify end-to-end
+
+From your connected client, try:
+
+1. *"Show me the schema"* → triggers `schema.inspect`
+2. *"How healthy is the database?"* → triggers `db.health`
+3. *"Why is this query slow: SELECT * FROM orders WHERE status='paid'"* → triggers
+   `query.explain` with plan verdicts
+4. Attempt `DELETE FROM orders` without a WHERE clause → should be refused with
+   `CONFIRMATION_REQUIRED` and a human-readable reason
+
+If #4 executes instead of refusing, stop and check you're running the right server.
+
+---
+
+## Troubleshooting
+
+**`DSN_MISSING` on startup**
+No `PGOPS_DSN` in the environment. Under stdio, remember the client's `env` block is
+what counts — a shell export in your terminal doesn't reach the spawned server.
+
+**`CONNECTION_FAILED: could not connect readonly pool`**
+Postgres unreachable or credentials wrong. Test the DSN directly:
+`psql "$PGOPS_DSN" -c "SELECT 1"`.
+
+**Tests fail with Docker errors**
+The suite uses testcontainers — Docker must be running. On Windows, make sure Docker
+Desktop is up before `uv run pytest`.
+
+**Port 5433 already in use (dev stack)**
+Another container is bound there. Either stop it or edit `docker-compose.yml`.
+
+**Audit log location**
+Default is `~/.pgops/audit.jsonl`. Override with `PGOPS_AUDIT_LOG`. Every executed
+statement *and every refusal* lands here — this is the file an incident review reads.
+
+**Client doesn't show the tools**
+Check the client's MCP logs. The most common cause is a stray `print()` somewhere
+corrupting the stdio protocol stream — pgops logs everything to stderr for exactly this
+reason, but a wrapper script might not.

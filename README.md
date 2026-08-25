@@ -70,10 +70,13 @@ loopback unless you say otherwise.
 
 ## Quickstart
 
+See **[SETUP.md](SETUP.md)** for the complete guide — install, configuration, client
+wiring (Claude Desktop / Cursor / VS Code / Inspector / HTTP), and troubleshooting.
+
 ```bash
 uv sync
-# point at your local Postgres in Docker:
-export PGOPS_DSN="postgresql://user:pass@localhost:5432/mydb"
+cp .env.example .env      # then set PGOPS_DSN
+uv run pgops-mcp --selfcheck --dsn "postgresql://user:pass@localhost:5432/mydb"
 uv run pgops-mcp            # stdio transport for Claude Desktop / Cursor / VS Code
 ```
 
@@ -92,6 +95,9 @@ Add to Claude Desktop:
 
 ## Docs
 
+- [`SETUP.md`](SETUP.md) — full setup guide: config, clients, HTTP auth, troubleshooting
+- [`.env.example`](.env.example) — every environment variable, documented
+
 - [`docs/PRD.md`](docs/PRD.md) — what & why, goals, non-goals
 - [`docs/SPEC.md`](docs/SPEC.md) — phased technical spec with hard gates
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — system design + trade-offs
@@ -102,9 +108,10 @@ Add to Claude Desktop:
 
 ## Status
 
-**Phases 0–6b complete** (319 tests, every guardrail, verdict and lock-impact rule proven
+**Phases 0–6b complete** (371 tests, every guardrail, verdict and lock-impact rule proven
 against real Postgres via testcontainers — no mocks — plus end-to-end suites driving the
-server as a real MCP subprocess over stdio and as an authenticated HTTP server).
+server as a real MCP subprocess over stdio and as an authenticated HTTP server, verified
+through the MCP Inspector).
 
 | Phase | State | Tools |
 |---|---|---|
