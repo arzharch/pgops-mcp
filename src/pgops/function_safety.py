@@ -68,23 +68,32 @@ def function_references(sql: str) -> set[str]:
     parsed = sqlparse.parse(sql)[0]
     names: set[str] = set()
 
-    def walk(token: Any) -> None:
+    def walk(token: Any, in_with_defs: bool = False) -> None:
         tokens = getattr(token, "tokens", [])
+        # Does this group start with WITH? Then top-level Identifier lists are CTE
+        # definitions whose names parse as Functions.
+        starts_with_with = any(
+            str(c).strip().upper() == "WITH" for c in tokens[:3] if not getattr(c, "is_whitespace", False)
+        ) or (in_with_defs and type(token).__name__ != "Statement")
         for i, child in enumerate(tokens):
             ctype = type(child).__name__
             if ctype == "Function":
                 # A CTE definition (`WITH t(n) AS ...`) parses as a Function too —
-                # sqlparse can't tell it from a call. Disambiguate by what follows:
-                # a real call is not followed by the AS keyword; a CTE definition is.
-                # (Skip whitespace when peeking — tokens include whitespace nodes.)
-                nxt = None
-                for later in tokens[i + 1 :]:
-                    if getattr(later, "is_whitespace", False):
+                # sqlparse can't tell it from a call. Disambiguate by context: inside
+                # a WITH clause's definition list, a Function followed by AS is the
+                # CTE name. A call with an alias (`f(x) AS label`) also has AS after
+                # it, so the WITH-prefix check is what separates them: aliases on
+                # calls never occur inside the WITH definition list itself.
+                if starts_with_with:
+                    nxt = None
+                    for later in tokens[i + 1 :]:
+                        if getattr(later, "is_whitespace", False):
+                            continue
+                        nxt = later
+                        break
+                    if nxt is not None and str(nxt).strip().upper() == "AS":
+                        # this IS the CTE name case — not a function reference
                         continue
-                    nxt = later
-                    break
-                if nxt is not None and str(nxt).strip().upper() == "AS":
-                    continue  # CTE name, not a function reference
                 for sub in child.tokens:
                     stype = type(sub).__name__
                     if getattr(sub, "ttype", None) is T.Name or stype == "Identifier":
@@ -93,7 +102,7 @@ def function_references(sql: str) -> set[str]:
                             names.add(name)
                         break
             if child.is_group:
-                walk(child)
+                walk(child, starts_with_with)
 
     walk(parsed)
     return names
