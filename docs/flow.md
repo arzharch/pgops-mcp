@@ -74,6 +74,48 @@ span and no metric — despite being one of the most operationally interesting s
 
 ---
 
+## 2026-08-25 · Phase 6e — live-server evals (and a real security fix)
+
+"I made it and I'm happy with it" is not evidence. This phase adds an evaluation suite
+that boots the real server — HTTP transport, JWT auth, scope enforcement, observability
+middleware — and drives it with a real MCP client over the wire, asserting the claims an
+operator would actually depend on. Marker: `live` (`uv run pytest tests/test_live_server.py -m live`).
+
+- **PHASE-6e · the full verdict taxonomy is reachable end-to-end.** executed / denied /
+  refused / failed all asserted through real HTTP, because if any outcome were
+  unreachable or mislabeled through the deployed stack, every dashboard and alert built
+  on Phase 6d would be silently wrong.
+- **PHASE-6e · safety guarantees survive the network hop.** Unbounded DELETE refused,
+  token binding holds, single-use holds, rows untouched while gated — evaluated as a
+  service, not as functions.
+- **PHASE-6e · benchmarks with p95 budgets, not vibes.** query.read p95 ≤ 500ms,
+  db.health ≤ 250ms, denial fast-path ≤ 200ms (denials touch no database; if they cost
+  as much as reads, middleware grew a hidden pool dependency), plus a concurrency check
+  that 10 parallel reads don't serialize toward 10x latency.
+- **PHASE-6e · the suite found a real bug on its first run.** A confirmation token
+  issued for a *refused* statement (unbounded DELETE) could be redeemed on any *allowed*
+  statement: the redeem check only ran inside the refusal branch, so an allowed
+  statement carrying someone else's token executed without ever checking what that token
+  approved. In-process unit tests missed it because they only tested one direction.
+  Fixed in `query_write`: supplied tokens are redeemed unconditionally before any other
+  logic; a misapplied credential raises CONFIRMATION_MISMATCH and leaves the original
+  approval intact. Regression tests added in both directions.
+
+### Gate evidence
+
+```
+uv run pytest -q -m "not live and not slow"   # 372 passed
+uv run pytest tests/test_live_server.py -m live  # 8 passed, twice consecutively
+BENCH query.read(count)   n=20  p50=28.9ms   p95=33.9ms   (budget 500ms)
+BENCH db.health           n=20  p50=27.6ms   p95=34.1ms   (budget 250ms)
+BENCH denied(write)       n=20  p50=15.9ms   p95=20.5ms   (budget 200ms)
+BENCH concurrent(10 reads)      batch=454ms                (no serialization)
+uv run ruff check .                            # All checks passed!
+uv run mypy src                                # Success: no issues found in 33 source files
+```
+
+---
+
 The last tool from FR-3, and deliberately the last: "rollback" sounds like an undo
 button, and for schema migrations it is not one. The naive version is dangerous in a way
 that is easy to miss — a tool that implies reversibility will eventually be trusted at
