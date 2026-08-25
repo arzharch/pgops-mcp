@@ -1,12 +1,12 @@
-# TOOLS — Full Tool Catalog
+# TOOLS â€” Full Tool Catalog
 
-**Status:** v1.0 (target) · Phase mapping in [SPEC.md](SPEC.md)
+**Status:** v1.0 (target) Â· Phase mapping in [SPEC.md](../internal/SPEC.md)
 
 Conventions:
 - All tools return structured JSON. Errors are objects: `{"error": {"code", "message", "hint"}}`.
 - Destructive tools require `confirm_token` obtained from a prior refusal response.
 - SQL in audit logs is stored alongside its SHA-256 hash.
-- Tool names below are the exact registered names — they are a public contract and do
+- Tool names below are the exact registered names â€” they are a public contract and do
   not track the Python function names behind them.
 - No tool ever raises to the client: unexpected failures are caught at the tool boundary
   and returned as `{"error": {"code": "INTERNAL_ERROR", ...}}` with the traceback sent
@@ -15,7 +15,7 @@ Conventions:
 ---
 
 ## schema.inspect
-**Phase 1 ✅ implemented · Role: readonly**
+**Phase 1 âœ… implemented Â· Role: readonly**
 
 Inspect database structure.
 
@@ -30,7 +30,7 @@ extension list, schema-level stats.
 ---
 
 ## query.read
-**Phase 1 ✅ implemented · Role: readonly**
+**Phase 1 âœ… implemented Â· Role: readonly**
 
 Execute a read-only statement.
 
@@ -46,7 +46,7 @@ Values serialized safely (JSONB, arrays, numerics).
 ---
 
 ## query.write
-**Phase 2 ✅ implemented · Role: readwrite + confirmation for destructive**
+**Phase 2 âœ… implemented Â· Role: readwrite + confirmation for destructive**
 
 Execute a mutating statement. Not registered at all when the server runs with
 `--read-only`.
@@ -58,15 +58,15 @@ Execute a mutating statement. Not registered at all when the server runs with
 | timeout_ms | int? | 5000 | tiered cap, server max overrides |
 
 Behavior:
-- INSERT / bounded UPDATE/DELETE → executes immediately
-- UPDATE/DELETE without WHERE → blocked, returns reason + confirm token
-- DROP/TRUNCATE/ALTER ... DROP COLUMN → always destructive class
-- Unclassifiable statements (`VACUUM`, `DO $$...$$`, multi-statement) → treated as
+- INSERT / bounded UPDATE/DELETE â†’ executes immediately
+- UPDATE/DELETE without WHERE â†’ blocked, returns reason + confirm token
+- DROP/TRUNCATE/ALTER ... DROP COLUMN â†’ always destructive class
+- Unclassifiable statements (`VACUUM`, `DO $$...$$`, multi-statement) â†’ treated as
   destructive per ADR-001
 - Response: `{rows_affected, duration_ms, audit_id, classification}`
 
 Confirmation tokens are single-use, expire after 5 minutes, and are bound to the
-SHA-256 of the exact statement they were issued for — redeeming one against different
+SHA-256 of the exact statement they were issued for â€” redeeming one against different
 SQL fails with `CONFIRMATION_MISMATCH` and does not consume the token.
 
 Every call is audited, including refusals.
@@ -77,18 +77,18 @@ Error codes: `CONFIRMATION_REQUIRED`, `INVALID_CONFIRMATION`, `CONFIRMATION_MISM
 ---
 
 ## query.explain
-**Phase 3 ✅ implemented · Role: readonly, or readwrite when `analyze=true` on a write**
+**Phase 3 âœ… implemented Â· Role: readonly, or readwrite when `analyze=true` on a write**
 
 Explain a statement and return a parsed verdict.
 
 | Param | Type | Default | Notes |
 |---|---|---|---|
 | sql | str | required | any single statement |
-| analyze | bool | false | **executes the statement** — see below |
+| analyze | bool | false | **executes the statement** â€” see below |
 | confirm_token | str? | null | required for `analyze=true` on a guarded statement |
 | timeout_ms | int? | 5000 | tiered cap, server max overrides |
 
-⚠️ `EXPLAIN ANALYZE DELETE FROM t` **performs the delete** — `ANALYZE` executes the
+âš ï¸ `EXPLAIN ANALYZE DELETE FROM t` **performs the delete** â€” `ANALYZE` executes the
 statement. Handling:
 - `analyze=false` (default): plans only, never executes. Safe for any statement.
 - `analyze=true` on a read: executes a read, readonly pool.
@@ -99,7 +99,7 @@ statement. Handling:
 
 Returns `{analyzed, plan, verdicts[], planning_time_ms?, execution_time_ms?}`.
 `plan` is a compact tree (`node`, `planned_rows`, `actual_rows`, `total_time_ms`,
-`self_time_ms`, `loops`, `children`) — the raw plan's per-worker buffer counters are
+`self_time_ms`, `loops`, `children`) â€” the raw plan's per-worker buffer counters are
 dropped as noise.
 
 Each verdict is `{kind, severity, node, evidence, suggestion}`, sorted most-severe
@@ -107,35 +107,35 @@ first. Kinds: `seq_scan_large_table`, `expensive_filter`, `estimate_divergence`,
 `sort_spill`, `nested_loop_blowup`, `dominant_node`.
 
 Row and time values account for `Actual Loops`, and distinguish parallel workers
-(concurrent — times overlap) from nested-loop iterations (sequential — times add).
+(concurrent â€” times overlap) from nested-loop iterations (sequential â€” times add).
 
 ---
 
 ## index.advise
-**Phase 3 ✅ implemented · Role: readonly**
+**Phase 3 âœ… implemented Â· Role: readonly**
 
 | Param | Type | Default | Notes |
 |---|---|---|---|
 | limit | int | 10 | how many slow statements to return |
 
 Returns:
-- `stats_window` — how long the counters have been accumulating, and whether that is
+- `stats_window` â€” how long the counters have been accumulating, and whether that is
   long enough to trust unused-index findings
-- `unused_indexes` — zero scans, with `confidence` (`high` only when statistics span
-  ≥7 days) and size cost. Primary-key and unique indexes are never reported.
-- `redundant_indexes` — column list is a strict prefix of another index's. Unique and
+- `unused_indexes` â€” zero scans, with `confidence` (`high` only when statistics span
+  â‰¥7 days) and size cost. Primary-key and unique indexes are never reported.
+- `redundant_indexes` â€” column list is a strict prefix of another index's. Unique and
   primary-key indexes are excluded: a composite serves the same queries but does not
   enforce the same constraint.
-- `scan_hotspots` — tables taking sequential scans under load. Names the table, not the
+- `scan_hotspots` â€” tables taking sequential scans under load. Names the table, not the
   column: identifying the column needs plan inspection, so the suggestion is to run
   `query.explain` rather than a fabricated `CREATE INDEX`.
-- `top_statements` — slowest by total execution time (requires `pg_stat_statements`;
+- `top_statements` â€” slowest by total execution time (requires `pg_stat_statements`;
   absence degrades to catalog findings plus an explanatory note)
 
 ---
 
 ## db.health
-**Phase 1 ✅ implemented · Role: readonly**
+**Phase 1 âœ… implemented Â· Role: readonly**
 
 Health snapshot: connection counts by state, cache hit ratio, dead tuples/top bloat
 tables, long-running queries (>5s), blocked sessions via `pg_blocking_pids()`. Each
@@ -145,7 +145,7 @@ finding carries `{category, severity, summary, detail}` where severity is one of
 ---
 
 ## migration.plan
-**Phase 4 ✅ implemented · Role: readonly (dry-run is rolled back)**
+**Phase 4 âœ… implemented Â· Role: readonly (dry-run is rolled back)**
 
 Diff the live schema against a target and render an annotated plan. Executes nothing.
 
@@ -155,7 +155,7 @@ Diff the live schema against a target and render an annotated plan. Executes not
 | allow_drops | bool | false | required before any removal is emitted |
 | dry_run | bool | true | executes steps in an always-rolled-back transaction |
 
-Target format — desired *state*, not migration SQL:
+Target format â€” desired *state*, not migration SQL:
 
 ```json
 {"tables": {"orders": {
@@ -173,12 +173,12 @@ confidence, reasoning, safe_alternative, transactional}`.
 Behaviour worth knowing:
 - Tables/columns absent from the target are **left alone** unless `allow_drops=true`; a
   note lists what was skipped.
-- Ordering is dependency-safe: creations tables → columns → constraints → indexes, drops
+- Ordering is dependency-safe: creations tables â†’ columns â†’ constraints â†’ indexes, drops
   in reverse.
 - Type aliases are normalized (`int`/`integer`, `varchar`/`character varying`) so
   identical types never produce a spurious rewriting `ALTER TYPE`.
 - `atomic: false` when the plan contains `CREATE INDEX CONCURRENTLY`, which cannot run
-  in a transaction — a later failure then leaves earlier steps applied.
+  in a transaction â€” a later failure then leaves earlier steps applied.
 - `pgops_migrations` is pgops's own ledger: excluded from diffs, refused as a target.
 - Unsupported constructs (views, triggers, functions, partitions) are **refused**, not
   silently skipped.
@@ -186,7 +186,7 @@ Behaviour worth knowing:
 ---
 
 ## migration.apply
-**Phase 4 ✅ implemented · Role: readwrite + confirmation**
+**Phase 4 âœ… implemented Â· Role: readwrite + confirmation**
 
 | Param | Type | Default | Notes |
 |---|---|---|---|
@@ -210,14 +210,14 @@ Error codes: `CONFIRMATION_REQUIRED`, `CONFIRMATION_MISMATCH`, `MIGRATION_IN_FLI
 ---
 
 ## migration.history
-**Phase 4 ✅ implemented · Role: readonly**
+**Phase 4 âœ… implemented Â· Role: readonly**
 
 Ledger history plus any `in_flight` migrations, with a `warning` when one is present.
 
 ---
 
 ## migration.rollback
-**Phase 4 ✅ implemented · Role: readwrite + confirmation**
+**Phase 4 âœ… implemented Â· Role: readwrite + confirmation**
 
 | Param | Type | Default | Notes |
 |---|---|---|---|
@@ -228,11 +228,11 @@ Reverses an applied migration by inverting its recorded steps, last one first (t
 index must drop before the table it depends on). Each recorded step is classified into
 one of three honest outcomes:
 
-- **reversible** — e.g. `CREATE INDEX` → `DROP INDEX`; an index is derived data
-- **reversible with data loss** — e.g. `ADD COLUMN` → `DROP COLUMN`: the schema reverts,
+- **reversible** â€” e.g. `CREATE INDEX` â†’ `DROP INDEX`; an index is derived data
+- **reversible with data loss** â€” e.g. `ADD COLUMN` â†’ `DROP COLUMN`: the schema reverts,
   but every value written to that column since is destroyed. The confirmation reason
   says so explicitly.
-- **irreversible** — `DROP COLUMN`, `DROP TABLE`, type changes without a recorded
+- **irreversible** â€” `DROP COLUMN`, `DROP TABLE`, type changes without a recorded
   previous type
 
 **Any irreversible step refuses the whole rollback** and issues *no* token: unlike a
@@ -241,11 +241,11 @@ the offending step and points at restore-from-backup as the only real way back.
 
 Also refused:
 - migrations applied **after** this one (rolling back underneath them could break their
-  assumptions) — roll back the later ones first
+  assumptions) â€” roll back the later ones first
 - rows whose status is not `applied`
 - migrations recorded without structured step data (pre-structured-recording entries)
 
-On success the ledger row becomes `rolled_back` — history stays honest without claiming
+On success the ledger row becomes `rolled_back` â€” history stays honest without claiming
 destroyed data came back.
 
 Error codes: `CONFIRMATION_REQUIRED`, `CONFIRMATION_MISMATCH`,
@@ -255,7 +255,7 @@ Error codes: `CONFIRMATION_REQUIRED`, `CONFIRMATION_MISMATCH`,
 ---
 
 ## env.topology
-**Phase 5 ✅ implemented · Docker read-only API**
+**Phase 5 âœ… implemented Â· Docker read-only API**
 
 | Param | Type | Default | Notes |
 |---|---|---|---|
@@ -263,7 +263,7 @@ Error codes: `CONFIRMATION_REQUIRED`, `CONFIRMATION_MISMATCH`,
 
 Returns `{dsn_host_port, database_container, database_container_note, containers[],
 compose_projects{}}`. The database container is matched by **published host port** from
-the DSN, not by image name — a machine commonly runs several Postgres containers, and
+the DSN, not by image name â€” a machine commonly runs several Postgres containers, and
 matching on the image picks the wrong one.
 
 **Container environment variables are never returned.** `Config.Env` holds
@@ -273,7 +273,7 @@ allowlist of fields (name, image, status, health, compose project/service, ports
 by default.
 
 ## container.logs
-**Phase 5 ✅ implemented**
+**Phase 5 âœ… implemented**
 
 | Param | Type | Default | Notes |
 |---|---|---|---|
@@ -286,28 +286,28 @@ Returns `{container, lines[], returned, scanned, min_severity}`. Lines with no
 recognizable severity are dropped when filtering.
 
 ## container.stats
-**Phase 5 ✅ implemented**
+**Phase 5 âœ… implemented**
 
 CPU percent, memory (used/limit/percent), total IO bytes, and CPU throttling counters.
 Takes ~1s: a CPU percentage needs two samples to compute a delta. Memory matches
 `docker stats` accounting (usage minus reclaimable `inactive_file`).
 
 ## env.correlate
-**Phase 5 ✅ implemented**
+**Phase 5 âœ… implemented**
 
 Runs `db.health`, finds the database container, and returns plain-language hints joining
 database symptoms to container resource pressure. Hints are phrased "consistent with",
 never as diagnoses, and the tool stays quiet when nothing is wrong.
 
 ## container.restart / container.exec
-**Phase 5 ✅ implemented · Gated twice (exec: three times)**
+**Phase 5 âœ… implemented Â· Gated twice (exec: three times)**
 
 Not registered as tools at all unless the server runs with `--approval-mode`
-(`PGOPS_APPROVAL_MODE=true`) — an agent is never told they exist. With the flag, each
+(`PGOPS_APPROVAL_MODE=true`) â€” an agent is never told they exist. With the flag, each
 call still requires a `confirm_token` bound to that specific container and command.
 
 `container.exec` additionally enforces a **read-only diagnostic command allowlist**
-(`ps`, `df`, `free`, `uptime`, `cat`, `ls`, `pg_isready`, `psql`, …), checked by
+(`ps`, `df`, `free`, `uptime`, `cat`, `ls`, `pg_isready`, `psql`, â€¦), checked by
 basename so `/bin/bash` cannot bypass it. It deliberately does not offer an arbitrary
 shell.
 
@@ -324,12 +324,12 @@ model spending a turn on a tool call. All mirror data already reachable through 
 | URI | Contents |
 |---|---|
 | `pgops://schema` | Full schema: tables, columns, constraints, indexes, extensions |
-| `pgops://schema/summary` | Table names, row estimates, sizes — the cheap version |
+| `pgops://schema/summary` | Table names, row estimates, sizes â€” the cheap version |
 | `pgops://schema/{table}` | One table's full definition (template) |
 | `pgops://health` | Health snapshot with severities |
 | `pgops://migrations` | Ledger history, including interrupted migrations |
-| `pgops://audit/recent` | Recent audit metadata — **SQL text omitted** (see below) |
-| `pgops://config` | Effective safety configuration — **DSN omitted** |
+| `pgops://audit/recent` | Recent audit metadata â€” **SQL text omitted** (see below) |
+| `pgops://config` | Effective safety configuration â€” **DSN omitted** |
 
 Two deliberate redactions:
 - `pgops://config` never includes the DSN, which carries the password.
@@ -346,11 +346,11 @@ Two deliberate redactions:
 |---|---|---|
 | `diagnose-slow-query` | `sql` | Evidence-driven slow query investigation |
 | `plan-safe-migration` | `description` | Zero-downtime schema change, lock impact first |
-| `incident-triage` | — | Cheapest, most-likely checks first |
-| `review-index-health` | — | Index review respecting the statistics window |
-| `explain-safety-model` | — | What this server will and will not permit |
+| `incident-triage` | â€” | Cheapest, most-likely checks first |
+| `review-index-health` | â€” | Index review respecting the statistics window |
+| `explain-safety-model` | â€” | What this server will and will not permit |
 
-Prompts encode the *order* to use tools in and what to do with the answers — the part no
+Prompts encode the *order* to use tools in and what to do with the answers â€” the part no
 individual tool can express.
 
 ---
@@ -374,7 +374,7 @@ pgops-mcp --transport http --public-key <path>       # binds 127.0.0.1 by defaul
 | `pgops:write` | query.write, migration.apply, migration.rollback |
 | `pgops:admin` | container.restart, container.exec |
 
-The server holds only the public key — it can verify tokens, never issue them. A tool
+The server holds only the public key â€” it can verify tokens, never issue them. A tool
 with no scope entry requires `pgops:admin` (deny by default). `subject` identifies the
 agent for audit purposes.
 
@@ -384,6 +384,6 @@ agent for audit purposes.
 
 Dangerous actions ask the **user** directly via MCP elicitation where the client supports
 it, rather than routing approval through the agent. Where it does not, the server falls
-back to the confirmation-token protocol — degraded, but never to "allowed". A user who
+back to the confirmation-token protocol â€” degraded, but never to "allowed". A user who
 declines gets `CONFIRMATION_DECLINED` and **no token**: an explicit refusal is not
 convertible into a credential. The audit log records which method approved each action.

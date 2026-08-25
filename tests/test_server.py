@@ -27,7 +27,7 @@ async def _server(conn_manager: ConnectionManager, config: PgopsConfig) -> FastM
 async def test_registered_tool_names_match_docs(
     conn_manager: ConnectionManager, config: PgopsConfig
 ) -> None:
-    """Tool names are a public contract (docs/TOOLS.md, and whatever an agent was told
+    """Tool names are a public contract (docs/API.md, and whatever an agent was told
     to call). They must not drift with the Python function names behind them."""
     server = await _server(conn_manager, config)
     names = {t.name for t in await server.list_tools()}

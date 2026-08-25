@@ -102,7 +102,7 @@ def build_server(config: PgopsConfig, conn_manager: ConnectionManager, auth: Any
     audit = AuditLog(config.audit_path)
     tokens = ConfirmationTokenStore(ttl_s=config.confirm_token_ttl_s)
 
-    # Tool names match docs/TOOLS.md exactly. FastMCP would otherwise derive the name
+    # Tool names match docs/API.md exactly. FastMCP would otherwise derive the name
     # from the Python function, which is a private implementation detail — the tool
     # name is a public contract that agents and docs both depend on.
     @mcp.tool(name="schema.inspect")
