@@ -9,6 +9,8 @@ from collections.abc import Awaitable, Callable
 from enum import StrEnum
 from typing import Any
 
+from pgops.observability import ToolSpan
+
 logger = logging.getLogger("pgops")
 
 
@@ -75,17 +77,35 @@ def tool_boundary[**P](
 
     @functools.wraps(func)
     async def wrapper(*args: P.args, **kwargs: P.kwargs) -> dict[str, Any]:
-        try:
-            return await func(*args, **kwargs)
-        except PgopsError as exc:
-            logger.info("tool %s refused: %s %s", func.__name__, exc.code.value, exc.message)
-            return exc.to_dict()
-        except Exception:
-            # exc_info: operator sees the whole traceback on stderr; the caller does not.
-            logger.exception("unhandled error in tool %s", func.__name__)
-            return PgopsError(
-                ErrorCode.INTERNAL_ERROR,
-                "internal error; see server logs",
-            ).to_dict()
+        # One span per tool call, created here so every tool is instrumented by
+        # construction rather than by remembering to decorate each one. Refusals are
+        # spans too: a spike in CONFIRMATION_REQUIRED is an operational signal.
+        with ToolSpan(func.__name__) as span:
+            try:
+                result = await func(*args, **kwargs)
+            except PgopsError as exc:
+                logger.info("tool %s refused: %s %s", func.__name__, exc.code.value, exc.message)
+                span.set_verdict("refused", error_code=exc.code.value)
+                return exc.to_dict()
+            except Exception as exc:
+                # exc_info: operator sees the whole traceback on stderr; the caller does not.
+                logger.exception("unhandled error in tool %s", func.__name__)
+                span.record_exception(exc)
+                span.set_verdict("failed", error_code=ErrorCode.INTERNAL_ERROR.value)
+                return PgopsError(
+                    ErrorCode.INTERNAL_ERROR,
+                    "internal error; see server logs",
+                ).to_dict()
+            # Successes carry what happened for latency/traffic dashboards. The error
+            # contract means refusals arrive as normal dicts with an "error" key —
+            # those are counted as refusals, not successes.
+            if isinstance(result, dict) and "error" in result:
+                span.set_verdict(
+                    "refused",
+                    error_code=result.get("error", {}).get("code", "unknown"),
+                )
+            else:
+                span.set_verdict("executed")
+            return result
 
     return wrapper

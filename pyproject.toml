@@ -17,7 +17,11 @@ dependencies = [
 pgops-mcp = "pgops.__main__:main"
 
 [project.optional-dependencies]
-otel = ["opentelemetry-sdk>=1.25"]
+otel = [
+    "opentelemetry-sdk>=1.25",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.25",
+    "aiohttp>=3.9",
+]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",

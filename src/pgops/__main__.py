@@ -27,6 +27,7 @@ from pgops.errors import PgopsError, tool_boundary
 from pgops.guardrails import ConfirmationTokenStore
 from pgops.middleware import ScopeEnforcement
 from pgops.migrations.rollback import rollback_migration
+from pgops.observability import init_observability, run_health_endpoints
 from pgops.prompts import (
     diagnose_slow_query,
     explain_safety_model,
@@ -597,9 +598,23 @@ def main() -> None:
         auth = build_verifier(load_public_key(Path(args.public_key).expanduser()))
 
     conn_manager = ConnectionManager(config)
+    init_observability()
+
+    async def _readiness() -> bool:
+        try:
+            health = await conn_manager.healthcheck()
+            return bool(health.get("readonly"))
+        except Exception:  # noqa: BLE001 - readiness must answer, not raise
+            return False
 
     async def _run() -> None:
         await conn_manager.start()
+        health_task = None
+        # health endpoints are useful even without OTel export
+        if run_health_endpoints is not None:
+            import asyncio
+
+            health_task = asyncio.create_task(run_health_endpoints(_readiness))
         try:
             mcp = build_server(config, conn_manager, auth=auth)
             if args.transport == "http":
@@ -609,6 +624,8 @@ def main() -> None:
             else:
                 await mcp.run_async(transport="stdio")
         finally:
+            if health_task is not None:
+                health_task.cancel()
             await conn_manager.stop()
 
     asyncio.run(_run())

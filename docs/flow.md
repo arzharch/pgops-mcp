@@ -5,7 +5,48 @@
 
 ---
 
-## 2026-08-25 · Phase 4c — migration.rollback
+## 2026-08-25 · Phase 6d — observability: traces, metrics, health
+
+The difference between "has an audit log" and "is observable". The audit log answers
+*who did what, approved by whom* (forensic); this layer answers *how slow, how often,
+how healthy* (operational). Both are needed before "production-grade" is an honest claim.
+
+- **PHASE-6d · one design constraint above all: telemetry must never break the
+  operation it describes.** With `PGOPS_OTEL_ENDPOINT` unset every call in
+  `observability.py` is a cheap no-op — asserted by test, not by intention. A
+  monitoring layer that can fail the request it monitors is worse than no monitoring.
+  The otel/aiohttp dependencies are an optional extra (`uv sync --extra otel`); the
+  module imports them lazily and degrades with a warning if absent.
+- **PHASE-6d · spans at the boundary, not per tool.** `tool_boundary` now opens a
+  `ToolSpan`, so all 15 tools are covered by construction rather than by remembering to
+  instrument each one. Spans carry what an incident responder needs: tool name,
+  verdict (`executed` / `refused` / `failed`), error code, duration. Refusals are
+  spans too — a spike in CONFIRMATION_REQUIRED is itself an operational signal (an
+  agent trying something it shouldn't).
+- **PHASE-6d · four metrics, chosen for a service like this:** `pgops.tool.calls`
+  (counter by tool + verdict), `pgops.tool.duration` (histogram for p99 SLOs),
+  `pgops.pool.timeouts` (pool saturation), `pgops.db.up` (gauge from healthcheck).
+  Metrics are recorded even when no span exists — they're the cheaper signal and the
+  one dashboards are built on.
+- **PHASE-6d · liveness vs readiness, the distinction operators actually need.**
+  `/health` says the process is alive; `/ready` says it can do its job right now
+  (Postgres reachable). Liveness failing → restart; readiness failing → stop sending
+  traffic but don't restart — the database being down is not this process's fault.
+  Served on `PGOPS_HEALTH_PORT` via aiohttp, started alongside any transport.
+- **PHASE-6d · failure masking preserved under instrumentation.** The boundary still
+  converts unexpected exceptions into structured INTERNAL_ERROR without leaking
+  internals — verified by test that the wrapping itself doesn't change refusal or
+  masking semantics.
+
+### Gate evidence
+
+```
+uv run pytest -q -m "not slow"   # 369 passed + 9 deselected (7 new observability tests)
+uv run ruff check .              # All checks passed!
+uv run mypy src                  # Success: no issues found in 33 source files
+```
+
+---
 
 The last tool from FR-3, and deliberately the last: "rollback" sounds like an undo
 button, and for schema migrations it is not one. The naive version is dangerous in a way

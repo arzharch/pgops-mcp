@@ -38,6 +38,7 @@ import asyncpg
 
 from pgops.config import PgopsConfig
 from pgops.errors import ErrorCode, PgopsError
+from pgops.observability import record_pool_timeout, set_db_up
 
 logger = logging.getLogger("pgops.connections")
 
@@ -97,6 +98,7 @@ class ConnectionManager:
             conn = await asyncio.wait_for(self.readonly_pool.acquire(), timeout=timeout)
         except TimeoutError as exc:
             logger.warning("readonly pool exhausted after %.1fs wait", timeout)
+            record_pool_timeout()
             raise PgopsError(
                 ErrorCode.POOL_EXHAUSTED,
                 f"no readonly connection available within {timeout:.1f}s",
@@ -136,6 +138,7 @@ class ConnectionManager:
             result["readonly"] = True
         except (OSError, asyncpg.PostgresError):
             pass
+        set_db_up(result["readonly"])
         if self._readwrite_pool is not None:
             try:
                 async with self._readwrite_pool.acquire() as conn:
