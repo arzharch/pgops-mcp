@@ -107,10 +107,15 @@ async def test_safety_guarantees_hold_over_the_wire(dsn: str, tmp_path: Path) ->
 
         await client.call_tool(
             "query.write",
-            {"sql": "DROP TABLE stdio_items", "confirm_token": (
-                (await client.call_tool("query.write", {"sql": "DROP TABLE stdio_items"}))
-                .data["error"]["hint"].split("confirm_token=")[1].split("'")[1]
-            )},
+            {
+                "sql": "DROP TABLE stdio_items",
+                "confirm_token": (
+                    (await client.call_tool("query.write", {"sql": "DROP TABLE stdio_items"}))
+                    .data["error"]["hint"]
+                    .split("confirm_token=")[1]
+                    .split("'")[1]
+                ),
+            },
         )
 
     # the subprocess wrote its own audit trail
@@ -136,7 +141,9 @@ async def test_stdout_carries_only_protocol_traffic(dsn: str, tmp_path: Path) ->
     env["PGOPS_AUDIT_LOG"] = str(tmp_path / "audit.jsonl")
 
     proc = await asyncio.create_subprocess_exec(
-        sys.executable, "-m", "pgops",
+        sys.executable,
+        "-m",
+        "pgops",
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
@@ -158,9 +165,7 @@ async def test_stdout_carries_only_protocol_traffic(dsn: str, tmp_path: Path) ->
     assert early_stdout == b"", early_stdout[:400]
 
 
-async def test_read_only_mode_hides_write_tool_over_the_wire(
-    dsn: str, tmp_path: Path
-) -> None:
+async def test_read_only_mode_hides_write_tool_over_the_wire(dsn: str, tmp_path: Path) -> None:
     env = dict(os.environ)
     env["PGOPS_DSN"] = dsn
     env["PGOPS_READ_ONLY"] = "true"

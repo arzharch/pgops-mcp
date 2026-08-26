@@ -1,4 +1,4 @@
-﻿"""Audit replay â€” dry-run analysis and gated execution.
+"""Audit replay â€” dry-run analysis and gated execution.
 
 The audit log is the forensic record; replay makes it executable. Tests cover:
 
@@ -113,8 +113,22 @@ async def test_actor_filter_limits_scope(audit_file: Path) -> None:
     _write_audit(
         audit_file,
         [
-            {"ts": "t1", "actor": "alice", "tool": "query.read", "verdict": "executed", "classification": "read", "sql": "SELECT 1"},
-            {"ts": "t2", "actor": "bob", "tool": "query.read", "verdict": "executed", "classification": "read", "sql": "SELECT 2"},
+            {
+                "ts": "t1",
+                "actor": "alice",
+                "tool": "query.read",
+                "verdict": "executed",
+                "classification": "read",
+                "sql": "SELECT 1",
+            },
+            {
+                "ts": "t2",
+                "actor": "bob",
+                "tool": "query.read",
+                "verdict": "executed",
+                "classification": "read",
+                "sql": "SELECT 2",
+            },
         ],
     )
     report = await replay_audit_log(None, audit_file, execute=False, actor_filter="alice")  # type: ignore[arg-type]
@@ -221,9 +235,7 @@ async def test_failed_statement_stops_the_run(
 
         conn = await asyncpg.connect(config.dsn)
         try:
-            exists = await conn.fetchval(
-                "SELECT to_regclass('replay_never') IS NOT NULL"
-            )
+            exists = await conn.fetchval("SELECT to_regclass('replay_never') IS NOT NULL")
             assert exists is False, "statements after the failure must not have run"
         finally:
             await conn.close()
@@ -241,8 +253,22 @@ async def test_chronological_order_regardless_of_file_order(audit_file: Path) ->
     _write_audit(
         audit_file,
         [
-            {"ts": "early", "actor": "a", "tool": "query.read", "verdict": "executed", "classification": "read", "sql": "SELECT 1"},
-            {"ts": "late", "actor": "a", "tool": "query.read", "verdict": "executed", "classification": "read", "sql": "SELECT 2"},
+            {
+                "ts": "early",
+                "actor": "a",
+                "tool": "query.read",
+                "verdict": "executed",
+                "classification": "read",
+                "sql": "SELECT 1",
+            },
+            {
+                "ts": "late",
+                "actor": "a",
+                "tool": "query.read",
+                "verdict": "executed",
+                "classification": "read",
+                "sql": "SELECT 2",
+            },
         ],
     )
     report = await replay_audit_log(None, audit_file, execute=False)  # type: ignore[arg-type]
@@ -255,8 +281,22 @@ async def test_replay_entries_from_prior_runs_are_skipped(audit_file: Path) -> N
     _write_audit(
         audit_file,
         [
-            {"ts": "t1", "actor": "replay:dev", "tool": "replay", "verdict": "executed", "classification": "write", "sql": "INSERT INTO items VALUES (999)"},
-            {"ts": "t2", "actor": "dev", "tool": "query.write", "verdict": "executed", "classification": "read", "sql": "SELECT 1"},
+            {
+                "ts": "t1",
+                "actor": "replay:dev",
+                "tool": "replay",
+                "verdict": "executed",
+                "classification": "write",
+                "sql": "INSERT INTO items VALUES (999)",
+            },
+            {
+                "ts": "t2",
+                "actor": "dev",
+                "tool": "query.write",
+                "verdict": "executed",
+                "classification": "read",
+                "sql": "SELECT 1",
+            },
         ],
     )
     report = await replay_audit_log(None, audit_file, execute=False)  # type: ignore[arg-type]

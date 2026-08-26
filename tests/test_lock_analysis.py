@@ -38,9 +38,7 @@ def test_add_column_constant_default_does_not_rewrite() -> None:
     ["'pending'", "'pending'::text", "0", "-1", "1.5", "true", "NULL"],
 )
 def test_constant_defaults_recognised(default_expr: str) -> None:
-    impact = analyze_statement(
-        f"ALTER TABLE orders ADD COLUMN c text DEFAULT {default_expr}", BIG
-    )
+    impact = analyze_statement(f"ALTER TABLE orders ADD COLUMN c text DEFAULT {default_expr}", BIG)
     assert impact.rewrites_table is False, default_expr
 
 
@@ -53,9 +51,7 @@ def test_volatile_defaults_force_a_rewrite(default_expr: str) -> None:
 
     This is the distinction that looks like nothing in SQL and costs a full rewrite.
     """
-    impact = analyze_statement(
-        f"ALTER TABLE orders ADD COLUMN c int DEFAULT {default_expr}", BIG
-    )
+    impact = analyze_statement(f"ALTER TABLE orders ADD COLUMN c int DEFAULT {default_expr}", BIG)
     assert impact.operation is OperationClass.TABLE_REWRITE, default_expr
     assert impact.rewrites_table is True
     assert impact.blocks_reads is True
@@ -126,9 +122,7 @@ def test_validate_constraint_blocks_neither_reads_nor_writes() -> None:
 
 
 def test_add_validated_constraint_suggests_the_two_step_split() -> None:
-    impact = analyze_statement(
-        "ALTER TABLE orders ADD CONSTRAINT c CHECK (total_cents >= 0)", BIG
-    )
+    impact = analyze_statement("ALTER TABLE orders ADD CONSTRAINT c CHECK (total_cents >= 0)", BIG)
     assert "NOT VALID" in (impact.safe_alternative or "")
 
 

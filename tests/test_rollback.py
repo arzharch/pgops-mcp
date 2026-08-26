@@ -100,9 +100,7 @@ def test_invert_create_index_is_fully_reversible() -> None:
 
 
 def test_invert_drop_column_is_irreversible() -> None:
-    reversal = invert(
-        {"kind": ChangeKind.DROP_COLUMN.value, "table": "orders", "target": "status"}
-    )
+    reversal = invert({"kind": ChangeKind.DROP_COLUMN.value, "table": "orders", "target": "status"})
     assert reversal.reversibility is Reversibility.NONE
     assert reversal.blocks_rollback is True
     assert reversal.sql is None
@@ -146,8 +144,10 @@ def test_plan_blocked_when_any_step_irreversible() -> None:
 
 
 async def test_rollback_reverts_a_safe_migration(
-    conn_manager: ConnectionManager, config: PgopsConfig,
-    audit: AuditLog, tokens: ConfirmationTokenStore,
+    conn_manager: ConnectionManager,
+    config: PgopsConfig,
+    audit: AuditLog,
+    tokens: ConfirmationTokenStore,
 ) -> None:
     target: dict[str, Any] = {"tables": {"items": {"columns": {"tag": {"type": "text"}}}}}
     await _apply_migration(conn_manager, config, audit, tokens, target, name="add-tag")
@@ -164,8 +164,10 @@ async def test_rollback_reverts_a_safe_migration(
 
 
 async def test_rollback_of_index_only_migration_destroys_nothing(
-    conn_manager: ConnectionManager, config: PgopsConfig,
-    audit: AuditLog, tokens: ConfirmationTokenStore,
+    conn_manager: ConnectionManager,
+    config: PgopsConfig,
+    audit: AuditLog,
+    tokens: ConfirmationTokenStore,
 ) -> None:
     """An index is derived data — its rollback should say so rather than hedge."""
     target: dict[str, Any] = {
@@ -183,15 +185,15 @@ async def test_rollback_of_index_only_migration_destroys_nothing(
     assert "did not come back" not in result["note"]
     pool = await conn_manager.readwrite_pool()
     async with pool.acquire() as conn:
-        count = await conn.fetchval(
-            "SELECT count(*) FROM pg_indexes WHERE indexname = 'idx_nm'"
-        )
+        count = await conn.fetchval("SELECT count(*) FROM pg_indexes WHERE indexname = 'idx_nm'")
     assert count == 0
 
 
 async def test_rollback_refuses_an_irreversible_migration_without_a_token(
-    conn_manager: ConnectionManager, config: PgopsConfig,
-    audit: AuditLog, tokens: ConfirmationTokenStore,
+    conn_manager: ConnectionManager,
+    config: PgopsConfig,
+    audit: AuditLog,
+    tokens: ConfirmationTokenStore,
 ) -> None:
     """DROP COLUMN cannot be undone by any human answer — so no token is ever issued.
 
@@ -222,8 +224,10 @@ async def test_rollback_refuses_an_irreversible_migration_without_a_token(
 
 
 async def test_rollback_refuses_when_later_migrations_are_stacked(
-    conn_manager: ConnectionManager, config: PgopsConfig,
-    audit: AuditLog, tokens: ConfirmationTokenStore,
+    conn_manager: ConnectionManager,
+    config: PgopsConfig,
+    audit: AuditLog,
+    tokens: ConfirmationTokenStore,
 ) -> None:
     first: dict[str, Any] = {"tables": {"items": {"columns": {"a_one": {"type": "text"}}}}}
     await _apply_migration(conn_manager, config, audit, tokens, first, name="first")
@@ -239,8 +243,10 @@ async def test_rollback_refuses_when_later_migrations_are_stacked(
 
 
 async def test_rollback_refuses_a_non_applied_row(
-    conn_manager: ConnectionManager, config: PgopsConfig,
-    audit: AuditLog, tokens: ConfirmationTokenStore,
+    conn_manager: ConnectionManager,
+    config: PgopsConfig,
+    audit: AuditLog,
+    tokens: ConfirmationTokenStore,
 ) -> None:
     pool = await conn_manager.readwrite_pool()
     async with pool.acquire() as conn:
@@ -258,8 +264,10 @@ async def test_rollback_refuses_a_non_applied_row(
 
 
 async def test_rollback_unknown_ledger_id_is_structured_error(
-    conn_manager: ConnectionManager, config: PgopsConfig,
-    audit: AuditLog, tokens: ConfirmationTokenStore,
+    conn_manager: ConnectionManager,
+    config: PgopsConfig,
+    audit: AuditLog,
+    tokens: ConfirmationTokenStore,
 ) -> None:
     with pytest.raises(PgopsError) as exc_info:
         await rollback_migration(conn_manager, audit, tokens, 999999)
@@ -267,8 +275,10 @@ async def test_rollback_unknown_ledger_id_is_structured_error(
 
 
 async def test_rollback_token_is_bound_to_the_migration(
-    conn_manager: ConnectionManager, config: PgopsConfig,
-    audit: AuditLog, tokens: ConfirmationTokenStore,
+    conn_manager: ConnectionManager,
+    config: PgopsConfig,
+    audit: AuditLog,
+    tokens: ConfirmationTokenStore,
 ) -> None:
     """Approval to roll back one migration must not reverse a different one."""
     target: dict[str, Any] = {"tables": {"items": {"columns": {"x_col": {"type": "text"}}}}}
@@ -290,8 +300,10 @@ async def test_rollback_token_is_bound_to_the_migration(
 
 
 async def test_failed_rollback_leaves_the_migration_applied(
-    conn_manager: ConnectionManager, config: PgopsConfig,
-    audit: AuditLog, tokens: ConfirmationTokenStore,
+    conn_manager: ConnectionManager,
+    config: PgopsConfig,
+    audit: AuditLog,
+    tokens: ConfirmationTokenStore,
 ) -> None:
     """A reversal that fails mid-way rolls back the whole transaction — the original
     migration stays applied, which is the only state that remains describable."""
@@ -309,7 +321,7 @@ async def test_failed_rollback_leaves_the_migration_applied(
     # which correctly no-ops on a missing column.)
     pool = await conn_manager.readwrite_pool()
     async with pool.acquire() as conn:
-        await conn.execute('ALTER TABLE items RENAME TO items_moved')
+        await conn.execute("ALTER TABLE items RENAME TO items_moved")
 
     with pytest.raises(PgopsError) as exc_fail:
         await rollback_migration(conn_manager, audit, tokens, ledger_id, confirm_token=token)
@@ -317,21 +329,21 @@ async def test_failed_rollback_leaves_the_migration_applied(
 
     # the migration is still applied under its own identity
     async with pool.acquire() as conn:
-        status = await conn.fetchval(
-            f"SELECT status FROM {LEDGER_TABLE} WHERE id = $1", ledger_id
-        )
+        status = await conn.fetchval(f"SELECT status FROM {LEDGER_TABLE} WHERE id = $1", ledger_id)
     assert status == "applied"
     # restore the fixture for subsequent tests
     async with pool.acquire() as conn:
-        await conn.execute('ALTER TABLE items_moved RENAME TO items')
+        await conn.execute("ALTER TABLE items_moved RENAME TO items")
     assert "renamed" in await _columns(config.dsn, "items") or "y_col" in await _columns(
         config.dsn, "items"
     )
 
 
 async def test_rollback_records_verdicts_in_the_audit_log(
-    conn_manager: ConnectionManager, config: PgopsConfig,
-    audit: AuditLog, tokens: ConfirmationTokenStore,
+    conn_manager: ConnectionManager,
+    config: PgopsConfig,
+    audit: AuditLog,
+    tokens: ConfirmationTokenStore,
 ) -> None:
     log = AuditLog(config.audit_path)
     target: dict[str, Any] = {"tables": {"items": {"columns": {"z_col": {"type": "text"}}}}}

@@ -36,11 +36,17 @@ async def _kinds(
 
 # --- scenario 1: sequential scan on a large table -----------------------------------
 async def test_scenario_seq_scan_on_large_table(
-    perf_dsn: str, conn_manager: ConnectionManager, config: PgopsConfig,
-    audit: AuditLog, tokens: ConfirmationTokenStore,
+    perf_dsn: str,
+    conn_manager: ConnectionManager,
+    config: PgopsConfig,
+    audit: AuditLog,
+    tokens: ConfirmationTokenStore,
 ) -> None:
     kinds = await _kinds(
-        conn_manager, config, audit, tokens,
+        conn_manager,
+        config,
+        audit,
+        tokens,
         "SELECT * FROM perf_events WHERE payload LIKE '%zzz%'",
     )
     assert VerdictKind.SEQ_SCAN_LARGE_TABLE in kinds
@@ -48,12 +54,18 @@ async def test_scenario_seq_scan_on_large_table(
 
 # --- scenario 2: highly selective filter with no index ------------------------------
 async def test_scenario_expensive_filter(
-    perf_dsn: str, conn_manager: ConnectionManager, config: PgopsConfig,
-    audit: AuditLog, tokens: ConfirmationTokenStore,
+    perf_dsn: str,
+    conn_manager: ConnectionManager,
+    config: PgopsConfig,
+    audit: AuditLog,
+    tokens: ConfirmationTokenStore,
 ) -> None:
     """'rare' matches 6 rows in 60,000 — Postgres must read and reject the rest."""
     result = await query_explain(
-        conn_manager, config, audit, tokens,
+        conn_manager,
+        config,
+        audit,
+        tokens,
         "SELECT * FROM perf_events WHERE status = 'rare'",
         analyze=True,
     )
@@ -64,15 +76,21 @@ async def test_scenario_expensive_filter(
 
 # --- scenario 3: sort spilling to disk ----------------------------------------------
 async def test_explain_does_not_bypass_the_classifier(
-    perf_dsn: str, conn_manager: ConnectionManager, config: PgopsConfig,
-    audit: AuditLog, tokens: ConfirmationTokenStore,
+    perf_dsn: str,
+    conn_manager: ConnectionManager,
+    config: PgopsConfig,
+    audit: AuditLog,
+    tokens: ConfirmationTokenStore,
 ) -> None:
     """Wrapping SQL in EXPLAIN must not become a way to smuggle a stacked statement
     past the classifier — the sneaky shape being
     `SET ...; SELECT ...` where the second half is what actually runs."""
     with pytest.raises(PgopsError) as exc_info:
         await query_explain(
-            conn_manager, config, audit, tokens,
+            conn_manager,
+            config,
+            audit,
+            tokens,
             "SET work_mem = '64kB'; SELECT * FROM perf_events ORDER BY payload",
             analyze=True,
         )
@@ -80,11 +98,17 @@ async def test_explain_does_not_bypass_the_classifier(
 
 
 async def test_scenario_sort_spill_with_low_work_mem(
-    perf_dsn: str, conn_manager: ConnectionManager, config: PgopsConfig,
-    audit: AuditLog, tokens: ConfirmationTokenStore,
+    perf_dsn: str,
+    conn_manager: ConnectionManager,
+    config: PgopsConfig,
+    audit: AuditLog,
+    tokens: ConfirmationTokenStore,
 ) -> None:
     kinds = await _kinds(
-        conn_manager, config, audit, tokens,
+        conn_manager,
+        config,
+        audit,
+        tokens,
         "SELECT * FROM perf_events ORDER BY payload, created_at, id",
     )
     # 60k rows × ~130 bytes exceeds the default 4MB work_mem
@@ -93,11 +117,17 @@ async def test_scenario_sort_spill_with_low_work_mem(
 
 # --- scenario 4: nested loop with a large outer side --------------------------------
 async def test_scenario_nested_loop_blowup(
-    perf_dsn: str, conn_manager: ConnectionManager, config: PgopsConfig,
-    audit: AuditLog, tokens: ConfirmationTokenStore,
+    perf_dsn: str,
+    conn_manager: ConnectionManager,
+    config: PgopsConfig,
+    audit: AuditLog,
+    tokens: ConfirmationTokenStore,
 ) -> None:
     result = await query_explain(
-        conn_manager, config, audit, tokens,
+        conn_manager,
+        config,
+        audit,
+        tokens,
         """
         SELECT u.email
         FROM perf_users u
@@ -113,8 +143,12 @@ async def test_scenario_nested_loop_blowup(
 
 # --- scenario 5: estimate divergence from stale statistics --------------------------
 async def test_scenario_estimate_divergence(
-    perf_dsn: str, dsn: str, conn_manager: ConnectionManager, config: PgopsConfig,
-    audit: AuditLog, tokens: ConfirmationTokenStore,
+    perf_dsn: str,
+    dsn: str,
+    conn_manager: ConnectionManager,
+    config: PgopsConfig,
+    audit: AuditLog,
+    tokens: ConfirmationTokenStore,
 ) -> None:
     """Correlated predicates: region and email prefix both derive from the same id, so
     the planner multiplies their selectivities and badly underestimates the result."""
@@ -140,8 +174,11 @@ async def test_scenario_estimate_divergence(
 
 # --- scenario 6: index scan is healthy, no scan verdict -----------------------------
 async def test_scenario_indexed_lookup_is_clean(
-    perf_dsn: str, conn_manager: ConnectionManager, config: PgopsConfig,
-    audit: AuditLog, tokens: ConfirmationTokenStore,
+    perf_dsn: str,
+    conn_manager: ConnectionManager,
+    config: PgopsConfig,
+    audit: AuditLog,
+    tokens: ConfirmationTokenStore,
 ) -> None:
     kinds = await _kinds(
         conn_manager, config, audit, tokens, "SELECT * FROM perf_events WHERE user_id = 42"
@@ -152,8 +189,10 @@ async def test_scenario_indexed_lookup_is_clean(
 
 # --- scenario 7: small table scan is not flagged ------------------------------------
 async def test_scenario_small_table_scan_is_clean(
-    conn_manager: ConnectionManager, config: PgopsConfig,
-    audit: AuditLog, tokens: ConfirmationTokenStore,
+    conn_manager: ConnectionManager,
+    config: PgopsConfig,
+    audit: AuditLog,
+    tokens: ConfirmationTokenStore,
 ) -> None:
     kinds = await _kinds(conn_manager, config, audit, tokens, "SELECT * FROM items")
     assert VerdictKind.SEQ_SCAN_LARGE_TABLE not in kinds
@@ -161,24 +200,38 @@ async def test_scenario_small_table_scan_is_clean(
 
 # --- scenario 8: primary key lookup is clean ----------------------------------------
 async def test_scenario_pk_lookup_is_clean(
-    perf_dsn: str, conn_manager: ConnectionManager, config: PgopsConfig,
-    audit: AuditLog, tokens: ConfirmationTokenStore,
+    perf_dsn: str,
+    conn_manager: ConnectionManager,
+    config: PgopsConfig,
+    audit: AuditLog,
+    tokens: ConfirmationTokenStore,
 ) -> None:
     result = await query_explain(
-        conn_manager, config, audit, tokens,
-        "SELECT * FROM perf_events WHERE id = 500", analyze=True,
+        conn_manager,
+        config,
+        audit,
+        tokens,
+        "SELECT * FROM perf_events WHERE id = 500",
+        analyze=True,
     )
     assert [v for v in result.verdicts if v.severity.value == "critical"] == []
 
 
 # --- scenario 9: aggregate over a large table ---------------------------------------
 async def test_scenario_aggregate_over_large_table(
-    perf_dsn: str, conn_manager: ConnectionManager, config: PgopsConfig,
-    audit: AuditLog, tokens: ConfirmationTokenStore,
+    perf_dsn: str,
+    conn_manager: ConnectionManager,
+    config: PgopsConfig,
+    audit: AuditLog,
+    tokens: ConfirmationTokenStore,
 ) -> None:
     result = await query_explain(
-        conn_manager, config, audit, tokens,
-        "SELECT status, count(*) FROM perf_events GROUP BY status", analyze=True,
+        conn_manager,
+        config,
+        audit,
+        tokens,
+        "SELECT status, count(*) FROM perf_events GROUP BY status",
+        analyze=True,
     )
     assert VerdictKind.SEQ_SCAN_LARGE_TABLE in {v.kind for v in result.verdicts}
     assert result.meta["execution_time_ms"] > 0
@@ -186,13 +239,19 @@ async def test_scenario_aggregate_over_large_table(
 
 # --- scenario 10: parallel plan reports sane percentages ----------------------------
 async def test_scenario_parallel_plan_percentages_are_sane(
-    perf_dsn: str, conn_manager: ConnectionManager, config: PgopsConfig,
-    audit: AuditLog, tokens: ConfirmationTokenStore,
+    perf_dsn: str,
+    conn_manager: ConnectionManager,
+    config: PgopsConfig,
+    audit: AuditLog,
+    tokens: ConfirmationTokenStore,
 ) -> None:
     """Regression against the parallel-loops bug: a node cannot own more than 100% of
     execution time."""
     result = await query_explain(
-        conn_manager, config, audit, tokens,
+        conn_manager,
+        config,
+        audit,
+        tokens,
         "SELECT * FROM perf_events WHERE payload LIKE '%q%' ORDER BY created_at",
         analyze=True,
     )
@@ -204,11 +263,17 @@ async def test_scenario_parallel_plan_percentages_are_sane(
 
 # --- scenario 11: join across both tables -------------------------------------------
 async def test_scenario_join_produces_tree(
-    perf_dsn: str, conn_manager: ConnectionManager, config: PgopsConfig,
-    audit: AuditLog, tokens: ConfirmationTokenStore,
+    perf_dsn: str,
+    conn_manager: ConnectionManager,
+    config: PgopsConfig,
+    audit: AuditLog,
+    tokens: ConfirmationTokenStore,
 ) -> None:
     result = await query_explain(
-        conn_manager, config, audit, tokens,
+        conn_manager,
+        config,
+        audit,
+        tokens,
         """
         SELECT u.region, count(*)
         FROM perf_events e JOIN perf_users u ON u.id = e.user_id
@@ -221,12 +286,19 @@ async def test_scenario_join_produces_tree(
 
 # --- behaviour: analyze=false never executes ----------------------------------------
 async def test_explain_without_analyze_has_no_timings(
-    perf_dsn: str, conn_manager: ConnectionManager, config: PgopsConfig,
-    audit: AuditLog, tokens: ConfirmationTokenStore,
+    perf_dsn: str,
+    conn_manager: ConnectionManager,
+    config: PgopsConfig,
+    audit: AuditLog,
+    tokens: ConfirmationTokenStore,
 ) -> None:
     result = await query_explain(
-        conn_manager, config, audit, tokens,
-        "SELECT * FROM perf_events WHERE status = 'rare'", analyze=False,
+        conn_manager,
+        config,
+        audit,
+        tokens,
+        "SELECT * FROM perf_events WHERE status = 'rare'",
+        analyze=False,
     )
     assert result.analyzed is False
     assert "execution_time_ms" not in result.meta
@@ -234,8 +306,10 @@ async def test_explain_without_analyze_has_no_timings(
 
 
 async def test_explain_analyze_false_on_delete_does_not_delete(
-    conn_manager: ConnectionManager, config: PgopsConfig,
-    audit: AuditLog, tokens: ConfirmationTokenStore,
+    conn_manager: ConnectionManager,
+    config: PgopsConfig,
+    audit: AuditLog,
+    tokens: ConfirmationTokenStore,
 ) -> None:
     """The safety property that matters most: planning a DELETE must not delete."""
     import asyncpg
@@ -252,21 +326,23 @@ async def test_explain_analyze_false_on_delete_does_not_delete(
 
 
 async def test_explain_analyze_on_delete_requires_confirmation(
-    conn_manager: ConnectionManager, config: PgopsConfig,
-    audit: AuditLog, tokens: ConfirmationTokenStore,
+    conn_manager: ConnectionManager,
+    config: PgopsConfig,
+    audit: AuditLog,
+    tokens: ConfirmationTokenStore,
 ) -> None:
     """EXPLAIN ANALYZE actually executes — it must be gated like a write."""
     with pytest.raises(PgopsError) as exc_info:
-        await query_explain(
-            conn_manager, config, audit, tokens, "DELETE FROM items", analyze=True
-        )
+        await query_explain(conn_manager, config, audit, tokens, "DELETE FROM items", analyze=True)
     assert exc_info.value.code is ErrorCode.CONFIRMATION_REQUIRED
     assert "executes the statement" in exc_info.value.message
 
 
 async def test_explain_analyze_on_delete_rolls_back(
-    conn_manager: ConnectionManager, config: PgopsConfig,
-    audit: AuditLog, tokens: ConfirmationTokenStore,
+    conn_manager: ConnectionManager,
+    config: PgopsConfig,
+    audit: AuditLog,
+    tokens: ConfirmationTokenStore,
 ) -> None:
     """With confirmation, real timings are collected — and the rows survive."""
     import asyncpg
@@ -290,7 +366,9 @@ async def test_explain_analyze_on_delete_rolls_back(
 
 
 async def test_explain_analyze_rollback_is_audited(
-    conn_manager: ConnectionManager, config: PgopsConfig, tokens: ConfirmationTokenStore,
+    conn_manager: ConnectionManager,
+    config: PgopsConfig,
+    tokens: ConfirmationTokenStore,
 ) -> None:
     log = AuditLog(config.audit_path)
     sql = "UPDATE items SET name = 'x'"
@@ -304,8 +382,10 @@ async def test_explain_analyze_rollback_is_audited(
 
 
 async def test_explain_rejects_invalid_sql(
-    conn_manager: ConnectionManager, config: PgopsConfig,
-    audit: AuditLog, tokens: ConfirmationTokenStore,
+    conn_manager: ConnectionManager,
+    config: PgopsConfig,
+    audit: AuditLog,
+    tokens: ConfirmationTokenStore,
 ) -> None:
     with pytest.raises(PgopsError) as exc_info:
         await query_explain(

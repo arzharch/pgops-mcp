@@ -48,10 +48,32 @@ from pgops.serialize import serialize_record
 
 KEYWORDS = st.sampled_from(
     [
-        "SELECT", "select", "SeLeCt", "INSERT", "insert", "UPDATE", "update",
-        "DELETE", "delete", "DROP", "truncate", "TRUNCATE", "ALTER", "CREATE",
-        "WITH", "EXPLAIN", "TABLE", "FROM", "WHERE", "VALUES", "INTO", "GRANT",
-        "VACUUM", "COPY", "DO", "CALL",
+        "SELECT",
+        "select",
+        "SeLeCt",
+        "INSERT",
+        "insert",
+        "UPDATE",
+        "update",
+        "DELETE",
+        "delete",
+        "DROP",
+        "truncate",
+        "TRUNCATE",
+        "ALTER",
+        "CREATE",
+        "WITH",
+        "EXPLAIN",
+        "TABLE",
+        "FROM",
+        "WHERE",
+        "VALUES",
+        "INTO",
+        "GRANT",
+        "VACUUM",
+        "COPY",
+        "DO",
+        "CALL",
     ]
 )
 
@@ -77,9 +99,7 @@ TRICKY_FRAGMENTS = st.sampled_from(
     ]
 )
 
-SIMPLE_STATEMENTS = st.tuples(KEYWORDS, IDENTIFIERS).map(
-    lambda t: f"{t[0]} {t[1]}"
-)
+SIMPLE_STATEMENTS = st.tuples(KEYWORDS, IDENTIFIERS).map(lambda t: f"{t[0]} {t[1]}")
 
 
 @st.composite
@@ -177,9 +197,9 @@ def test_property_has_where_never_raises_on_arbitrary_text(text: str) -> None:
 
 @settings(max_examples=200, deadline=None)
 @given(
-    st.lists(
-        st.tuples(IDENTIFIERS, IDENTIFIERS), min_size=1, max_size=20
-    ).map(lambda pairs: [f"DELETE FROM {a} WHERE id = {i}" for i, (a, _) in enumerate(pairs)])
+    st.lists(st.tuples(IDENTIFIERS, IDENTIFIERS), min_size=1, max_size=20).map(
+        lambda pairs: [f"DELETE FROM {a} WHERE id = {i}" for i, (a, _) in enumerate(pairs)]
+    )
 )
 def test_property_distinct_statements_have_distinct_fingerprints(statements: list[str]) -> None:
     """No sha256 collisions across generated statements — binding depends on it."""

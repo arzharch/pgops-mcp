@@ -123,9 +123,7 @@ async def test_missing_pg_stat_statements_degrades_gracefully(
     assert any("pg_stat_statements" in note for note in advice.notes)
 
 
-async def test_result_is_json_serializable(
-    perf_dsn: str, conn_manager: ConnectionManager
-) -> None:
+async def test_result_is_json_serializable(perf_dsn: str, conn_manager: ConnectionManager) -> None:
     advice = await index_advise(conn_manager)
     json.dumps(advice.to_dict())
 

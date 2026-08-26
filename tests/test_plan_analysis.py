@@ -116,11 +116,7 @@ def test_expensive_filter_flagged_when_most_rows_discarded() -> None:
 
 def test_total_discard_reports_exactly_100_percent() -> None:
     root, _ = parse_plan(
-        plan(
-            seq_scan(
-                **{"Actual Rows": 0, "Plan Rows": 0, "Rows Removed by Filter": 1_000_000}
-            )
-        )
+        plan(seq_scan(**{"Actual Rows": 0, "Plan Rows": 0, "Rows Removed by Filter": 1_000_000}))
     )
     verdicts = {v.kind: v for v in analyze(root)}
     assert "100.0%" in verdicts[VerdictKind.EXPENSIVE_FILTER].evidence
@@ -305,9 +301,7 @@ def test_meta_carries_timings() -> None:
 
 
 def test_compact_tree_omits_raw_noise() -> None:
-    root, _ = parse_plan(
-        plan(seq_scan(**{"Shared Hit Blocks": 999, "Parallel Aware": False}))
-    )
+    root, _ = parse_plan(plan(seq_scan(**{"Shared Hit Blocks": 999, "Parallel Aware": False})))
     compact = root.to_dict()
     assert compact["node"] == "Seq Scan on orders"
     assert "Shared Hit Blocks" not in compact

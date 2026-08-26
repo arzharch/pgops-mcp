@@ -108,7 +108,9 @@ async def test_denials_are_recorded_as_metrics() -> None:
         obs.record_denial("query.write", "demo-agent")
     finally:
         obs._counters.pop("calls", None)
-    assert counter.adds == [(1, {"tool": "query.write", "verdict": "denied", "caller": "demo-agent"})]
+    assert counter.adds == [
+        (1, {"tool": "query.write", "verdict": "denied", "caller": "demo-agent"})
+    ]
 
 
 async def test_only_outermost_span_emits_metrics() -> None:

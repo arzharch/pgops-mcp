@@ -37,11 +37,7 @@ def test_add_missing_column() -> None:
 
 
 def test_create_missing_table() -> None:
-    target = {
-        "tables": {
-            "invoices": {"columns": {"id": {"type": "bigint", "nullable": False}}}
-        }
-    }
+    target = {"tables": {"invoices": {"columns": {"id": {"type": "bigint", "nullable": False}}}}}
     changes = diff_schema(LIVE, target).changes
     assert changes[0].kind is ChangeKind.CREATE_TABLE
     assert 'CREATE TABLE "invoices"' in changes[0].sql

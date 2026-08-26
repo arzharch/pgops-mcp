@@ -34,9 +34,7 @@ def test_extracts_schema_qualified_call() -> None:
 
 
 def test_extracts_calls_inside_cte_and_subquery() -> None:
-    refs = function_references(
-        "WITH x AS (SELECT do_things()) SELECT * FROM (SELECT other_fn()) y"
-    )
+    refs = function_references("WITH x AS (SELECT do_things()) SELECT * FROM (SELECT other_fn()) y")
     assert {"do_things", "other_fn"} <= refs
 
 
@@ -109,9 +107,7 @@ async def test_volatile_function_is_refused(volatile_conn) -> None:
     assert "volatile" in exc_info.value.message
 
 
-async def test_volatile_function_refusal_happens_before_execution(
-    volatile_conn, dsn: str
-) -> None:
+async def test_volatile_function_refusal_happens_before_execution(volatile_conn, dsn: str) -> None:
     """The actual guarantee: refusing the read means the function never ran."""
     import asyncpg
 
@@ -153,9 +149,7 @@ async def test_no_references_is_a_noop(volatile_conn) -> None:
 # --- end-to-end through query.read ------------------------------------------------------
 
 
-async def test_query_read_refuses_volatile_function(
-    conn_manager, config, volatile_conn
-) -> None:
+async def test_query_read_refuses_volatile_function(conn_manager, config, volatile_conn) -> None:
     """The full path an agent hits: classify passes (lexically a read), then the
     catalog check refuses — with an actionable message, before anything executes."""
     from pgops.tools.query import query_read

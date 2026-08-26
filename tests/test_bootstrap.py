@@ -7,5 +7,6 @@ Phase 1 replaces this with real tests:
 - tests/test_migrations.py      (diff/plan/apply/rollback)
 """
 
+
 def test_bootstrap() -> None:
     assert True

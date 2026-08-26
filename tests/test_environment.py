@@ -208,7 +208,9 @@ def test_correlation_links_memory_pressure_to_cache_misses() -> None:
 
 
 def test_correlation_reports_cpu_throttling() -> None:
-    hints = correlate([], {"memory": {"percent": 10}, "cpu_percent": 5, "throttling": {"throttled_periods": 42}})
+    hints = correlate(
+        [], {"memory": {"percent": 10}, "cpu_percent": 5, "throttling": {"throttled_periods": 42}}
+    )
     assert any("throttled 42 times" in h for h in hints)
 
 

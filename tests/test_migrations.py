@@ -53,9 +53,7 @@ async def test_plan_produces_annotated_steps(
     assert plan.dry_run_ok is True
 
 
-async def test_plan_executes_nothing(
-    conn_manager: ConnectionManager, config: PgopsConfig
-) -> None:
+async def test_plan_executes_nothing(conn_manager: ConnectionManager, config: PgopsConfig) -> None:
     """The dry run runs the DDL for real inside a transaction — the rollback must be
     total, or `plan` silently becomes `apply`."""
     target: dict[str, Any] = {"tables": {"items": {"columns": {"ghost": {"type": "text"}}}}}
@@ -78,9 +76,7 @@ async def test_dry_run_catches_a_statement_that_would_fail(
     """Static analysis cannot know a type doesn't exist; executing it in a doomed
     transaction can. This is the failure that would otherwise appear halfway through a
     real apply with earlier steps already committed."""
-    target: dict[str, Any] = {
-        "tables": {"items": {"columns": {"bad": {"type": "no_such_type"}}}}
-    }
+    target: dict[str, Any] = {"tables": {"items": {"columns": {"bad": {"type": "no_such_type"}}}}}
     plan = await migration_plan(conn_manager, config, target)
     assert plan.dry_run_ok is False
     assert "would fail" in (plan.steps[0].dry_run or "")
@@ -108,8 +104,10 @@ async def test_concurrent_index_makes_plan_non_atomic(
 
 
 async def test_apply_executes_and_records_in_ledger(
-    conn_manager: ConnectionManager, config: PgopsConfig,
-    audit: AuditLog, tokens: ConfirmationTokenStore,
+    conn_manager: ConnectionManager,
+    config: PgopsConfig,
+    audit: AuditLog,
+    tokens: ConfirmationTokenStore,
 ) -> None:
     target: dict[str, Any] = {"tables": {"items": {"columns": {"note": {"type": "text"}}}}}
     plan = await migration_plan(conn_manager, config, target)
@@ -127,8 +125,10 @@ async def test_apply_executes_and_records_in_ledger(
 
 
 async def test_reapplying_the_same_plan_is_a_noop(
-    conn_manager: ConnectionManager, config: PgopsConfig,
-    audit: AuditLog, tokens: ConfirmationTokenStore,
+    conn_manager: ConnectionManager,
+    config: PgopsConfig,
+    audit: AuditLog,
+    tokens: ConfirmationTokenStore,
 ) -> None:
     target: dict[str, Any] = {"tables": {"items": {"columns": {"note2": {"type": "text"}}}}}
     plan = await migration_plan(conn_manager, config, target)
@@ -139,8 +139,10 @@ async def test_reapplying_the_same_plan_is_a_noop(
 
 
 async def test_unknown_plan_id_refused(
-    conn_manager: ConnectionManager, config: PgopsConfig,
-    audit: AuditLog, tokens: ConfirmationTokenStore,
+    conn_manager: ConnectionManager,
+    config: PgopsConfig,
+    audit: AuditLog,
+    tokens: ConfirmationTokenStore,
 ) -> None:
     with pytest.raises(PgopsError) as exc_info:
         await migration_apply(conn_manager, config, audit, tokens, "nope")
@@ -148,8 +150,10 @@ async def test_unknown_plan_id_refused(
 
 
 async def test_destructive_migration_requires_confirmation(
-    conn_manager: ConnectionManager, config: PgopsConfig,
-    audit: AuditLog, tokens: ConfirmationTokenStore,
+    conn_manager: ConnectionManager,
+    config: PgopsConfig,
+    audit: AuditLog,
+    tokens: ConfirmationTokenStore,
 ) -> None:
     target: dict[str, Any] = {"tables": {"items": {"columns": {"id": {"type": "integer"}}}}}
     plan = await migration_plan(conn_manager, config, target, allow_drops=True)
@@ -163,8 +167,10 @@ async def test_destructive_migration_requires_confirmation(
 
 
 async def test_destructive_migration_executes_with_token(
-    conn_manager: ConnectionManager, config: PgopsConfig,
-    audit: AuditLog, tokens: ConfirmationTokenStore,
+    conn_manager: ConnectionManager,
+    config: PgopsConfig,
+    audit: AuditLog,
+    tokens: ConfirmationTokenStore,
 ) -> None:
     target: dict[str, Any] = {"tables": {"items": {"columns": {"id": {"type": "integer"}}}}}
     plan = await migration_plan(conn_manager, config, target, allow_drops=True)
@@ -180,8 +186,10 @@ async def test_destructive_migration_executes_with_token(
 
 
 async def test_confirmation_reason_names_the_data_loss(
-    conn_manager: ConnectionManager, config: PgopsConfig,
-    audit: AuditLog, tokens: ConfirmationTokenStore,
+    conn_manager: ConnectionManager,
+    config: PgopsConfig,
+    audit: AuditLog,
+    tokens: ConfirmationTokenStore,
 ) -> None:
     """The agent relays this to a human, so it has to say what is actually lost."""
     target: dict[str, Any] = {"tables": {"items": {"columns": {"id": {"type": "integer"}}}}}
@@ -192,8 +200,10 @@ async def test_confirmation_reason_names_the_data_loss(
 
 
 async def test_migration_token_bound_to_the_plan(
-    conn_manager: ConnectionManager, config: PgopsConfig,
-    audit: AuditLog, tokens: ConfirmationTokenStore,
+    conn_manager: ConnectionManager,
+    config: PgopsConfig,
+    audit: AuditLog,
+    tokens: ConfirmationTokenStore,
 ) -> None:
     """Approval for one migration must not apply a different one.
 
@@ -224,8 +234,10 @@ async def test_migration_token_bound_to_the_plan(
 
 
 async def test_failed_migration_rolls_back_every_step(
-    conn_manager: ConnectionManager, config: PgopsConfig,
-    audit: AuditLog, tokens: ConfirmationTokenStore,
+    conn_manager: ConnectionManager,
+    config: PgopsConfig,
+    audit: AuditLog,
+    tokens: ConfirmationTokenStore,
 ) -> None:
     """Postgres has transactional DDL — a migration that fails on step 3 must not leave
     steps 1 and 2 applied. This is the property that makes an atomic claim true."""
@@ -251,8 +263,10 @@ async def test_failed_migration_rolls_back_every_step(
 
 
 async def test_failed_migration_is_recorded_as_failed(
-    conn_manager: ConnectionManager, config: PgopsConfig,
-    audit: AuditLog, tokens: ConfirmationTokenStore,
+    conn_manager: ConnectionManager,
+    config: PgopsConfig,
+    audit: AuditLog,
+    tokens: ConfirmationTokenStore,
 ) -> None:
     target: dict[str, Any] = {"tables": {"items": {"columns": {"bad": {"type": "no_such_type"}}}}}
     plan = await migration_plan(conn_manager, config, target, dry_run=False)
@@ -267,8 +281,10 @@ async def test_failed_migration_is_recorded_as_failed(
 
 
 async def test_interrupted_migration_blocks_further_applies(
-    conn_manager: ConnectionManager, config: PgopsConfig,
-    audit: AuditLog, tokens: ConfirmationTokenStore,
+    conn_manager: ConnectionManager,
+    config: PgopsConfig,
+    audit: AuditLog,
+    tokens: ConfirmationTokenStore,
 ) -> None:
     """Simulates a process killed mid-migration: a row left `in_flight`.
 

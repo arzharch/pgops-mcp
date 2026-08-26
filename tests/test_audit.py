@@ -17,7 +17,11 @@ from pgops.tools.write import query_write
 
 def test_entry_has_hash_and_timestamp(tmp_path: Path) -> None:
     log = AuditLog(tmp_path / "audit.jsonl")
-    log.record(AuditEntry(tool="query.write", sql="DELETE FROM t", verdict="executed", classification="write"))
+    log.record(
+        AuditEntry(
+            tool="query.write", sql="DELETE FROM t", verdict="executed", classification="write"
+        )
+    )
     (entry,) = log.read_all()
     assert entry["sql"] == "DELETE FROM t"
     assert entry["sql_sha256"] == sql_fingerprint("DELETE FROM t")
@@ -28,7 +32,11 @@ def test_entry_has_hash_and_timestamp(tmp_path: Path) -> None:
 def test_log_is_append_only(tmp_path: Path) -> None:
     log = AuditLog(tmp_path / "audit.jsonl")
     for i in range(5):
-        log.record(AuditEntry(tool="query.write", sql=f"SELECT {i}", verdict="executed", classification="write"))
+        log.record(
+            AuditEntry(
+                tool="query.write", sql=f"SELECT {i}", verdict="executed", classification="write"
+            )
+        )
     entries = log.read_all()
     assert [e["sql"] for e in entries] == [f"SELECT {i}" for i in range(5)]
 
@@ -41,7 +49,9 @@ def test_creates_parent_directory(tmp_path: Path) -> None:
 
 def test_one_json_object_per_line(tmp_path: Path) -> None:
     log = AuditLog(tmp_path / "audit.jsonl")
-    log.record(AuditEntry(tool="t", sql="SELECT 'multi\nline'", verdict="executed", classification="read"))
+    log.record(
+        AuditEntry(tool="t", sql="SELECT 'multi\nline'", verdict="executed", classification="read")
+    )
     log.record(AuditEntry(tool="t", sql="SELECT 2", verdict="executed", classification="read"))
     # embedded newlines must not break the line-per-entry contract
     lines = log.path.read_text(encoding="utf-8").strip().split("\n")
@@ -91,9 +101,7 @@ async def test_execution_is_audited_with_rows_and_duration(
     tokens: ConfirmationTokenStore,
 ) -> None:
     log = AuditLog(config.audit_path)
-    result = await query_write(
-        conn_manager, config, log, tokens, "DELETE FROM items WHERE id <= 5"
-    )
+    result = await query_write(conn_manager, config, log, tokens, "DELETE FROM items WHERE id <= 5")
     (entry,) = log.read_all()
     assert entry["verdict"] == "executed"
     assert entry["rows_affected"] == 5
@@ -131,7 +139,9 @@ async def test_bad_token_attempt_is_audited(
     log = AuditLog(config.audit_path)
     token = tokens.issue("DELETE FROM items WHERE id = 1", "test")
     with pytest.raises(PgopsError):
-        await query_write(conn_manager, config, log, tokens, "DELETE FROM items", confirm_token=token)
+        await query_write(
+            conn_manager, config, log, tokens, "DELETE FROM items", confirm_token=token
+        )
     (entry,) = log.read_all()
     assert entry["verdict"] == "refused_bad_token"
     assert entry["error_code"] == "CONFIRMATION_MISMATCH"

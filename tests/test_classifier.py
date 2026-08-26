@@ -20,8 +20,14 @@ CASES: list[tuple[str, StatementClass]] = [
     ("DELETE FROM orders WHERE id = 1", StatementClass.WRITE),
     ("EXPLAIN INSERT INTO orders (customer_id) VALUES (1)", StatementClass.WRITE),
     # write hiding inside a CTE behind an outer SELECT — the case ADR-001 calls out
-    ("WITH x AS (INSERT INTO orders (customer_id) VALUES (1) RETURNING *) SELECT * FROM x", StatementClass.WRITE),
-    ("WITH x AS (DELETE FROM orders WHERE id = 1 RETURNING *) SELECT * FROM x", StatementClass.WRITE),
+    (
+        "WITH x AS (INSERT INTO orders (customer_id) VALUES (1) RETURNING *) SELECT * FROM x",
+        StatementClass.WRITE,
+    ),
+    (
+        "WITH x AS (DELETE FROM orders WHERE id = 1 RETURNING *) SELECT * FROM x",
+        StatementClass.WRITE,
+    ),
     ("CREATE TABLE t (id int)", StatementClass.DDL),
     ("ALTER TABLE orders ADD COLUMN foo int", StatementClass.DDL),
     ("CREATE INDEX CONCURRENTLY idx ON orders (status)", StatementClass.DDL),
@@ -41,7 +47,9 @@ CASES: list[tuple[str, StatementClass]] = [
 @pytest.mark.parametrize("sql, expected", CASES)
 def test_classify(sql: str, expected: StatementClass) -> None:
     result = classify(sql)
-    assert result.kind is expected, f"{sql!r} -> {result.kind} ({result.reason}), expected {expected}"
+    assert result.kind is expected, (
+        f"{sql!r} -> {result.kind} ({result.reason}), expected {expected}"
+    )
 
 
 def test_unknown_gates_as_destructive() -> None:

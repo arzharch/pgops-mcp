@@ -124,20 +124,22 @@ async def test_the_reason_reaches_the_user() -> None:
 
 
 async def test_elicitation_accept_executes_without_a_token(
-    conn_manager: ConnectionManager, config: PgopsConfig,
-    audit: AuditLog, tokens: ConfirmationTokenStore,
+    conn_manager: ConnectionManager,
+    config: PgopsConfig,
+    audit: AuditLog,
+    tokens: ConfirmationTokenStore,
 ) -> None:
     ctx = FakeContext("accept")
-    result = await query_write(
-        conn_manager, config, audit, tokens, "DELETE FROM items", ctx=ctx
-    )
+    result = await query_write(conn_manager, config, audit, tokens, "DELETE FROM items", ctx=ctx)
     assert result.rows_affected == 250
     assert ctx.elicited, "the user should have been asked"
 
 
 async def test_elicitation_decline_blocks_and_offers_no_token(
-    conn_manager: ConnectionManager, config: PgopsConfig,
-    audit: AuditLog, tokens: ConfirmationTokenStore,
+    conn_manager: ConnectionManager,
+    config: PgopsConfig,
+    audit: AuditLog,
+    tokens: ConfirmationTokenStore,
 ) -> None:
     """An explicit human "no" must not be convertible into a token the agent can redeem
     a moment later — that would make declining meaningless."""
@@ -152,8 +154,10 @@ async def test_elicitation_decline_blocks_and_offers_no_token(
 
 
 async def test_unsupported_client_falls_back_to_the_token_flow(
-    conn_manager: ConnectionManager, config: PgopsConfig,
-    audit: AuditLog, tokens: ConfirmationTokenStore,
+    conn_manager: ConnectionManager,
+    config: PgopsConfig,
+    audit: AuditLog,
+    tokens: ConfirmationTokenStore,
 ) -> None:
     """Degraded, but still gated — and still refuses on the first call."""
     ctx = FakeContext("unsupported")
@@ -172,8 +176,10 @@ async def test_unsupported_client_falls_back_to_the_token_flow(
 
 
 async def test_safe_statement_never_asks_the_user(
-    conn_manager: ConnectionManager, config: PgopsConfig,
-    audit: AuditLog, tokens: ConfirmationTokenStore,
+    conn_manager: ConnectionManager,
+    config: PgopsConfig,
+    audit: AuditLog,
+    tokens: ConfirmationTokenStore,
 ) -> None:
     """Prompting on every write would train users to click through approvals, which
     destroys the value of prompting on the dangerous ones."""
@@ -187,7 +193,7 @@ async def test_safe_statement_never_asks_the_user(
 async def test_audit_records_which_approval_method_was_used(
     conn_manager: ConnectionManager, config: PgopsConfig, tokens: ConfirmationTokenStore
 ) -> None:
-    """"The human was asked directly" and "the agent presented a token" are different
+    """ "The human was asked directly" and "the agent presented a token" are different
     assurances. An incident review needs to tell them apart."""
     log = AuditLog(config.audit_path)
     await query_write(

@@ -28,11 +28,15 @@ async def test_limit_above_server_max_rejected(
     conn_manager: ConnectionManager, config: PgopsConfig
 ) -> None:
     with pytest.raises(PgopsError) as exc_info:
-        await query_read(conn_manager, config, "SELECT * FROM items", limit=config.row_limits.max + 1)
+        await query_read(
+            conn_manager, config, "SELECT * FROM items", limit=config.row_limits.max + 1
+        )
     assert exc_info.value.code is ErrorCode.ROW_LIMIT_EXCEEDED
 
 
-async def test_write_statement_refused(conn_manager: ConnectionManager, config: PgopsConfig) -> None:
+async def test_write_statement_refused(
+    conn_manager: ConnectionManager, config: PgopsConfig
+) -> None:
     with pytest.raises(PgopsError) as exc_info:
         await query_read(conn_manager, config, "DELETE FROM items")
     assert exc_info.value.code is ErrorCode.CLASSIFICATION_REFUSED
