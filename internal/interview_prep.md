@@ -1198,6 +1198,155 @@ than a convenient lie.
 
 ---
 
+## Section 6e: The production checklist — auditing your own server
+
+Useful to rehearse because the interesting part is not the checklist, it is *how* you
+check. Reading your own code to confirm it does what you remember is how you confirm
+what you remember, not what the code does.
+
+### Q: How did you verify the server was production-ready?
+
+Nine points, checked mechanically rather than by inspection:
+
+```python
+# "every tool catches its errors" — an AST walk, not a grep and a hope
+tree = ast.parse(Path("src/pgops/__main__.py").read_text())
+fn = next(n for n in ast.walk(tree) if getattr(n, "name", "") == "build_server")
+for node in ast.walk(fn):
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        decs = [ast.unparse(d) for d in node.decorator_list]
+        if any("mcp.tool" in d for d in decs) and "tool_boundary" not in decs:
+            print("UNWRAPPED:", node.name)
+```
+
+Result: 17/17 wrapped, 17/17 with descriptions over 40 characters, and zero `print()`
+calls inside `build_server`. That last one matters more than it looks: under stdio,
+**stdout is the JSON-RPC channel**, so one stray `print()` corrupts the stream and
+presents as a client bug. There are 23 `print()` calls in the file — all in CLI
+subcommands (`--selfcheck`, `keygen`, `replay`) that exit before any transport starts.
+The AST check is what distinguishes those two cases; grep cannot.
+
+Seven of nine passed. Two did not.
+
+### Q: What did the audit find?
+
+**The server never reported its version.** `FastMCP("pgops-mcp", auth=auth)` took no
+`version=`, so `serverInfo` in the MCP `initialize` handshake was empty. Version
+reporting is the mechanism by which a client adapts to a changed tool signature — think
+API versioning — and it was simply absent. One argument to fix; the point is that
+seventeen tools' worth of tests never noticed, because no test asserted on the handshake.
+
+**There was no rate limit.** Which leads to the more interesting half.
+
+### Q: Talk me through the rate limiting.
+
+The first attempt was two lines — FastMCP ships `RateLimitingMiddleware`:
+
+```python
+mcp.add_middleware(RateLimitingMiddleware(
+    max_requests_per_second=2, burst_capacity=3,
+    get_client_id=lambda _ctx: current_caller().subject,
+))
+```
+
+I probed it against a real authenticated server rather than assuming. **0 of 12 tool
+calls got through with a burst capacity of 3.**
+
+It hooks `on_message`, so it counts *every* protocol message — `initialize`,
+`notifications/initialized`, `tools/list`. The client's opening handshake spent the whole
+bucket before it issued a single tool call. A legitimate session would have been
+rate-limited **at connect time**.
+
+The tempting fix is to raise the numbers until the symptom disappears. That is not a fix:
+handshake cost scales with how much a client chooses to enumerate, so the bug just waits
+for a chattier client. The right fix is to limit the thing the limit is *for*:
+
+```python
+class ToolCallRateLimit(Middleware):
+    async def on_call_tool(self, context, call_next):
+        caller = current_caller()
+        if not await self._bucket(caller.subject).consume():
+            raise ToolError(
+                f"rate limit exceeded for {caller.subject!r}: more than "
+                f"{self._rps} tool calls/second. Wait a moment and retry."
+            )
+        return await call_next(context)
+```
+
+Re-probed: 3 of 12, exactly as specified.
+
+Three decisions worth defending:
+
+- **`on_call_tool`, not `on_message`.** Listing tools is cheap and idempotent; running
+  `query.read` against a 1.2M-row table is neither.
+- **Keyed by token subject, not global.** A global limit lets one noisy agent starve
+  every other caller — the precise outcome auth exists to prevent. There is a test for
+  this: a loud agent exhausts its bucket, and a second agent's first call still succeeds.
+- **Bound to auth, so stdio is unlimited.** Same reasoning as scope enforcement: a rate
+  limit needs a caller to attribute requests to, and over stdio there is exactly one —
+  the user who spawned the process, holding their own DSN. A limit there is friction with
+  nothing to protect.
+
+### Q: Wasn't the server already bounded?
+
+It was, and being precise about the difference is the answer. Statement timeouts, row
+caps and pool sizes bound what any **single call** costs the database. None of them bound
+**how many calls arrive**, and none distinguish callers. A tool runs whenever a model
+decides to call it, and an agent in a retry loop issues calls far faster than a human
+would — every one of them individually within limits.
+
+### Q: You mentioned a security finding.
+
+A live RSA private key at `keys/demo/pgops_private.pem`, kept out of git only by a
+hand-written nested `.gitignore`. The root `.gitignore` had no `keys/` or `*.pem` rule.
+
+The part that made it a **product** bug rather than local untidiness: `pgops-mcp keygen`
+does not write that nested file. `--key-dir` accepts any path, so
+`pgops-mcp keygen --key-dir ./keys` inside a project is an entirely reasonable thing for
+a user to do — and one `git add -A` later, a signing key is in a git history, where
+deleting it does not help. A committed key has to be treated as compromised.
+
+```python
+def save(self, directory: Path) -> tuple[Path, Path]:
+    directory.mkdir(parents=True, exist_ok=True)
+    # Written BEFORE the key itself, so there is no window in which a private key
+    # exists on disk unprotected.
+    (directory / ".gitignore").write_text("*\n", encoding="utf-8")
+    private_path.write_text(self.private_key, encoding="utf-8")
+```
+
+Fixed at both layers, and I verified the history was clean (zero `.pem` files ever
+committed) rather than assuming. The principle: **a tool that hands the user a credential
+owns the obvious way that credential leaks.**
+
+### Q: Anything in the file structure?
+
+`internal/adr/ADR-005.md` contained ADRs 001 through 005 **concatenated in one file**.
+The filename claimed one decision; the file held five. So 31 references to
+`ADR-001`..`ADR-004` scattered through the source pointed at a file whose name says
+otherwise — an interviewer following "see ADR-001" would find nothing.
+
+Split into one file per ADR with an index. That is the whole convention: ADRs are
+referenced, superseded and dated individually.
+
+Also added the two standard files that were missing — `SECURITY.md` (conspicuous by its
+absence for a tool that executes SQL and talks to a Docker socket) and `CHANGELOG.md`.
+`SECURITY.md` states the known limits plainly — no per-session DSN isolation, in-memory
+confirmation tokens, a basename-checked exec allowlist — rather than leaving them to be
+discovered.
+
+### Tweaks for different settings
+
+| Setting | Change |
+|---|---|
+| Single local user (stdio) | Rate limit does not apply; nothing to configure |
+| Shared internal HTTP server | Default 10 rps / burst 20 is roughly "an agent working briskly"; raise for batch workloads |
+| Public-facing | Lower the limit, and put a reverse proxy in front — this is a per-caller fairness limit, not a DDoS defence |
+| Batch/migration runs | Raise `PGOPS_RATE_LIMIT_BURST`, not the rps; migrations are bursty by nature |
+| Benchmarking | `PGOPS_RATE_LIMIT_RPS=0` disables it entirely |
+
+---
+
 ## Section 7: Distribution — shipping it as an MCP server
 
 This section covers the packaging phase. It is worth rehearsing because it is where

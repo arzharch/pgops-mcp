@@ -5,6 +5,99 @@
 
 ---
 
+## 2026-08-27 · Phase 6g — production checklist audit
+
+Ran a nine-point production-readiness checklist against the codebase, mechanically
+rather than by reading: AST-walking the tool registrations, grepping for `print()` off
+the CLI path, checking which SQL is parameterised. Seven items already passed. The two
+that did not are recorded below, along with a security finding the audit surfaced on the
+way past.
+
+The general lesson is the one this whole project keeps re-learning: **a property nobody
+checks is a property you do not have.** `TOOL_SCOPES` was documentation until middleware
+consulted it; here, the version field and the rate limit were both simply absent, and
+nothing in seventeen tools' worth of tests noticed.
+
+### Item 7 — the server never reported its version
+
+`FastMCP("pgops-mcp", auth=auth)` took no `version=`, so `serverInfo` in the MCP
+`initialize` handshake carried none. A client had no way to answer "which build am I
+talking to", which is the whole mechanism by which a client adapts to a changed tool
+signature. Now passes `__version__` — the package version deliberately, because from a
+caller's point of view the tool contract and the release are the same thing.
+
+### Item 4 — rate limiting, and why the first attempt was wrong
+
+Wiring FastMCP's built-in `RateLimitingMiddleware` looked like a two-line fix. Probing it
+against a real server showed **0 of 12 tool calls got through with `burst_capacity=3`**.
+
+The middleware hooks `on_message`, so it counts every protocol message: `initialize`,
+`notifications/initialized`, `tools/list`, and so on. A client's opening handshake spent
+the entire bucket before it issued a single tool call — meaning a legitimate session
+would be rate-limited *at connect time*. Raising the numbers would have made the symptom
+go away without fixing anything, since handshake cost scales with how much a client
+chooses to enumerate.
+
+`ToolCallRateLimit` (middleware.py) hooks `on_call_tool` only, which matches what the
+limit is for: listing tools is cheap and idempotent, running `query.read` against a
+1.2M-row table is neither. Keyed by **token subject**, so one noisy agent cannot spend
+another's budget — precisely what a global limit would permit. Re-probed: 3 of 12, as
+specified.
+
+Worth being precise about what this adds, because the server was not short of limits.
+Statement timeouts, row caps and pool sizes bound what any *single* call costs the
+database. None of them bound how many calls arrive, and none distinguish callers. A tool
+runs whenever a model decides to call it.
+
+Bound to auth for the same reason as scopes: it needs a caller to attribute requests to,
+and over stdio there is exactly one — the user who spawned the process, holding their own
+DSN. `PGOPS_RATE_LIMIT_RPS=0` disables it.
+
+### A live private key with only incidental protection
+
+`keys/demo/pgops_private.pem` existed on disk, kept out of git by a hand-written nested
+`.gitignore`. The root `.gitignore` had no `keys/` or `*.pem` rule, and — the part that
+made this a product bug rather than local untidiness — **`pgops-mcp keygen` does not
+write that nested file.** `--key-dir` accepts any path, so
+`pgops-mcp keygen --key-dir ./keys` inside a project is an entirely reasonable thing for
+a user to do, and one `git add -A` later a signing key is in a history where deleting it
+does not help: it has to be treated as compromised.
+
+Fixed at both layers. `KeyMaterial.save()` now writes `.gitignore` **before** the key
+itself, so there is no window in which an unprotected private key exists on disk; the
+root `.gitignore` covers `keys/`, `*.pem`, and the caches that were also uncovered
+(`.venv/`, `.hypothesis/`, `bench-results/`). History verified clean — zero `.pem` files
+ever committed. A tool that hands the user a credential owns the obvious way that
+credential leaks.
+
+### Structure and naming, also audited
+
+- **`internal/adr/ADR-005.md` contained ADRs 001 through 005 concatenated.** The filename
+  claimed one decision and the file held five, so 31 references to `ADR-001`..`ADR-004`
+  across the source pointed at a file whose name says otherwise. Split one file per ADR
+  and added an index — they are referenced, superseded and dated individually, which is
+  the entire convention.
+- **`SECURITY.md` and `CHANGELOG.md` were missing.** Both standard; the first
+  conspicuously so for a tool that executes SQL and talks to a Docker socket. Written,
+  including the known limits (no per-session DSN isolation, in-memory tokens,
+  basename-checked exec allowlist) stated plainly rather than left to be discovered.
+- The publish workflow's `registry` job declared only `id-token: write`. An explicit
+  `permissions` block denies everything unlisted, so `actions/checkout` would have
+  failed. Caught by diffing against the official GitHub Actions example. Also dropped a
+  `mcp-publisher validate` step that is not in the documented command set.
+
+### Gate evidence
+
+- 443 tests pass; ruff and mypy clean.
+- Version and rate limit both verified against a live authenticated HTTP server, not
+  just unit-tested: `serverInfo.version == 0.1.1`, and 12 rapid calls with burst 3
+  yielded exactly 3 allowed and 9 refused with an actionable message.
+- Checklist items verified by AST walk rather than inspection: 17/17 tools carry
+  `@tool_boundary`, 17/17 have a description over 40 characters, and `build_server`
+  contains zero `print()` calls.
+
+---
+
 ## 2026-08-26 · Phase 6f — distribution: an MCP server, not a Python library
 
 The scope decision that shaped this phase: **pgops-mcp is a server, not a library.**
