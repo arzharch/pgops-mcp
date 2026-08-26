@@ -1,0 +1,91 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.arzharch/pgops-mcp",
+  "title": "pgops",
+  "description": "Safe, audited PostgreSQL operations for AI agents: guarded queries, migration planning with lock-impact analysis, EXPLAIN diagnosis, and Docker environment awareness.",
+  "version": "0.1.1",
+  "repository": {
+    "url": "https://github.com/arzharch/pgops-mcp",
+    "source": "github"
+  },
+  "packages": [
+    {
+      "registryType": "pypi",
+      "registryBaseUrl": "https://pypi.org",
+      "identifier": "pgops-mcp",
+      "version": "0.1.1",
+      "runtimeHint": "uvx",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "PGOPS_DSN",
+          "description": "PostgreSQL connection string for the database to operate on.",
+          "isRequired": true,
+          "isSecret": true
+        },
+        {
+          "name": "PGOPS_READONLY_DSN",
+          "description": "Optional separate DSN for the read-only pool. Use a role with no write grants to enforce read-only at the database rather than only in the server.",
+          "isSecret": true
+        },
+        {
+          "name": "PGOPS_READ_ONLY",
+          "description": "Set to 1 to withhold every mutating tool. Write tools are not registered at all, so an agent cannot call them.",
+          "default": "0"
+        },
+        {
+          "name": "PGOPS_APPROVAL_MODE",
+          "description": "Set to 1 to register container.restart and container.exec. Off by default: Docker socket access is root-equivalent on the host.",
+          "default": "0"
+        },
+        {
+          "name": "PGOPS_AUDIT_LOG",
+          "description": "Path to the append-only JSONL audit log.",
+          "default": "~/.pgops/audit.jsonl"
+        },
+        {
+          "name": "PGOPS_DEFAULT_TIMEOUT_MS",
+          "description": "Statement timeout applied to every query unless a tool call overrides it.",
+          "default": "5000"
+        },
+        {
+          "name": "PGOPS_MAX_TIMEOUT_MS",
+          "description": "Ceiling a caller-supplied timeout is clamped to.",
+          "default": "30000"
+        },
+        {
+          "name": "PGOPS_DEFAULT_ROW_LIMIT",
+          "description": "Rows returned by query.read when the caller does not specify a limit.",
+          "default": "100"
+        }
+      ]
+    },
+    {
+      "registryType": "oci",
+      "identifier": "ghcr.io/arzharch/pgops-mcp:0.1.1",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "PGOPS_DSN",
+          "description": "PostgreSQL connection string. From inside a container, localhost is the container itself — use host.docker.internal or the compose service name.",
+          "isRequired": true,
+          "isSecret": true
+        },
+        {
+          "name": "PGOPS_READ_ONLY",
+          "description": "Set to 1 to withhold every mutating tool.",
+          "default": "0"
+        },
+        {
+          "name": "PGOPS_AUDIT_LOG",
+          "description": "Path to the audit log inside the container. Mount a volume at this path or the log dies with the container.",
+          "default": "/var/lib/pgops/audit.jsonl"
+        }
+      ]
+    }
+  ]
+}

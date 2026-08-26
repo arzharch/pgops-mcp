@@ -1,0 +1,21 @@
+# Keep the build context small and free of anything secret or machine-local.
+.venv/
+.git/
+.github/
+dist/
+bench-results/
+keys/
+.env
+.env.example
+tests/
+internal/
+docs/
+dev/
+*.md
+!README.md
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.hypothesis/
+__pycache__/
+*.pyc
