@@ -84,6 +84,18 @@ class KeyMaterial:
         directory.mkdir(parents=True, exist_ok=True)
         private_path = directory / "pgops_private.pem"
         public_path = directory / "pgops_public.pem"
+
+        # Written BEFORE the key itself, so there is no window in which a private key
+        # exists on disk unprotected. The default key directory is ~/.pgops/keys, but
+        # --key-dir accepts anything, and `pgops-mcp keygen --key-dir ./keys` inside a
+        # project is an entirely reasonable thing for someone to do. At that point one
+        # `git add -A` commits a signing key, and a committed key has to be treated as
+        # compromised even after it is removed, because it stays in the history.
+        #
+        # A tool that hands the user a credential is responsible for the obvious way
+        # that credential leaks.
+        (directory / ".gitignore").write_text("*\n", encoding="utf-8")
+
         private_path.write_text(self.private_key, encoding="utf-8")
         public_path.write_text(self.public_key, encoding="utf-8")
         # 0600 on POSIX. Windows ignores the mode bits, which is worth stating rather

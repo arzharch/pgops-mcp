@@ -196,3 +196,18 @@ def _decode(token: str) -> dict[str, object]:
     payload += "=" * (-len(payload) % 4)
     result: dict[str, object] = json.loads(base64.urlsafe_b64decode(payload))
     return result
+
+
+def test_saved_keys_are_protected_from_being_committed(keypair: object, tmp_path: Path) -> None:
+    """A tool that hands the user a credential owns the obvious way it leaks.
+
+    `--key-dir` accepts any path, so `pgops-mcp keygen --key-dir ./keys` inside a project
+    is a reasonable thing to do — and one `git add -A` later a signing key is in the
+    history, where deleting it does not help: it has to be treated as compromised.
+    """
+    directory = tmp_path / "keys"
+    private_path, _ = keypair.save(directory)  # type: ignore[attr-defined]
+    guard = directory / ".gitignore"
+    assert guard.exists(), "keygen must not leave a private key in an unguarded directory"
+    assert guard.read_text().strip() == "*"
+    assert private_path.parent == directory
