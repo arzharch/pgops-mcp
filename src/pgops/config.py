@@ -114,6 +114,19 @@ class PgopsConfig:
     row_limits: RowLimits = field(default_factory=RowLimits)
     pools: PoolSizing = field(default_factory=PoolSizing)
 
+    # Per-caller tool-call rate, applied only under HTTP auth. A tool runs whenever a
+    # model decides to call it, and a confused agent in a retry loop can issue calls far
+    # faster than a human would — the existing bounds (pool caps, statement timeouts,
+    # row limits) protect the *database* but not the server's own capacity, and none of
+    # them distinguish one caller from another.
+    #
+    # Not applied over stdio: there is one local caller holding their own DSN, so a
+    # limit there is friction with nothing to protect. 0 disables it.
+    rate_limit_rps: float = field(
+        default_factory=lambda: float(_int_env("PGOPS_RATE_LIMIT_RPS", 10))
+    )
+    rate_limit_burst: int = field(default_factory=lambda: _int_env("PGOPS_RATE_LIMIT_BURST", 20))
+
     @classmethod
     def from_env(
         cls,

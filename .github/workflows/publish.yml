@@ -82,16 +82,15 @@ jobs:
     needs: [pypi, container]
     runs-on: ubuntu-latest
     permissions:
-      id-token: write
+      id-token: write # OIDC token used to prove the io.github.arzharch namespace
+      contents: read # actions/checkout — an explicit permissions block denies the rest
     steps:
       - uses: actions/checkout@v4
       - name: Install mcp-publisher
         run: |
-          curl -sL "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_linux_amd64.tar.gz" \
+          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" \
             | tar xz mcp-publisher
-          sudo mv mcp-publisher /usr/local/bin/
-      - run: mcp-publisher validate
-      # GitHub OIDC rather than an interactive login: the namespace is
-      # io.github.arzharch/*, and this repository's identity is what proves ownership.
-      - run: mcp-publisher login github-oidc
-      - run: mcp-publisher publish
+      # GitHub OIDC rather than an interactive device-code login: the namespace is
+      # io.github.arzharch/*, and this repository's own identity is what proves it.
+      - run: ./mcp-publisher login github-oidc
+      - run: ./mcp-publisher publish

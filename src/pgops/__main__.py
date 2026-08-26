@@ -11,6 +11,7 @@ from typing import Any
 
 from fastmcp import Context, FastMCP
 
+from pgops import __version__
 from pgops.audit import AuditLog
 from pgops.auth import (
     Scope,
@@ -25,7 +26,11 @@ from pgops.config import PgopsConfig
 from pgops.connections import ConnectionManager
 from pgops.errors import PgopsError, tool_boundary
 from pgops.guardrails import ConfirmationTokenStore
-from pgops.middleware import ObservabilityMiddleware, ScopeEnforcement
+from pgops.middleware import (
+    ObservabilityMiddleware,
+    ScopeEnforcement,
+    ToolCallRateLimit,
+)
 from pgops.migrations.rollback import rollback_migration
 from pgops.observability import init_observability, run_health_endpoints
 from pgops.prompts import (
@@ -86,7 +91,11 @@ def configure_logging(level: int = logging.INFO) -> None:
 
 
 def build_server(config: PgopsConfig, conn_manager: ConnectionManager, auth: Any = None) -> FastMCP:
-    mcp: FastMCP = FastMCP("pgops-mcp", auth=auth)
+    # The version reaches clients in the MCP `initialize` handshake (serverInfo), which
+    # is how a client adapts to a changed tool signature. Without it the server reports
+    # no version at all and "which build am I talking to" is unanswerable — from a
+    # caller's point of view the tool contract and the release are the same thing.
+    mcp: FastMCP = FastMCP("pgops-mcp", version=__version__, auth=auth)
 
     # The token verifier answers "is this caller real". It does NOT answer "may this
     # caller run this tool" — its required_scopes list is checked once per request
@@ -99,6 +108,22 @@ def build_server(config: PgopsConfig, conn_manager: ConnectionManager, auth: Any
     mcp.add_middleware(ObservabilityMiddleware())
     if auth is not None:
         mcp.add_middleware(ScopeEnforcement())
+
+        # Rate limiting is bound to auth for the same reason as scopes: it needs a
+        # caller to attribute requests to, and over stdio there is exactly one — the
+        # user who spawned the process, holding their own DSN. A limit there is friction
+        # with nothing to protect.
+        #
+        # Worth being precise about what this adds, since the server is not short of
+        # limits: statement timeouts, row caps and pool sizes bound what any single call
+        # costs the *database*. None of them bound how many calls arrive, and none
+        # distinguish callers. A tool runs whenever a model decides to call it, and an
+        # agent in a retry loop issues calls far faster than a human would.
+        #
+        # Keyed by token subject, so one noisy agent cannot consume another's budget —
+        # which is precisely what a global limit would allow.
+        if config.rate_limit_rps > 0:
+            mcp.add_middleware(ToolCallRateLimit(config.rate_limit_rps, config.rate_limit_burst))
 
     audit = AuditLog(config.audit_path)
     tokens = ConfirmationTokenStore(ttl_s=config.confirm_token_ttl_s)

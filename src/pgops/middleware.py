@@ -166,3 +166,51 @@ class ObservabilityMiddleware(Middleware):
 
     async def on_list_tools(self, context: MiddlewareContext[Any], call_next: Any) -> Any:
         return await call_next(context)
+
+
+class ToolCallRateLimit(Middleware):
+    """Per-caller rate limit on **tool calls only**.
+
+    FastMCP ships `RateLimitingMiddleware`, which hooks `on_message` and therefore
+    counts every protocol message: `initialize`, `notifications/initialized`,
+    `tools/list`, `resources/list`, and so on. Measured with capacity 3, a client's
+    opening handshake consumed the entire bucket before it issued a single tool call —
+    twelve subsequent calls were all refused, and a legitimate session would have been
+    rate-limited at connect time. Tuning the numbers up hides that without fixing it,
+    because the handshake cost scales with how much a client chooses to enumerate.
+
+    Limiting `on_call_tool` matches what the limit is actually for. Listing tools is
+    cheap and idempotent; running `query.read` against a 1.2M-row table is neither. A
+    tool executes whenever a model decides to call it, and an agent in a retry loop
+    issues calls far faster than a human would.
+
+    Keyed by token subject, so one noisy agent cannot spend another's budget — which is
+    exactly what a global limit would permit.
+    """
+
+    def __init__(self, requests_per_second: float, burst: int) -> None:
+        self._rps = requests_per_second
+        self._burst = max(1, burst)
+        self._buckets: dict[str, Any] = {}
+
+    def _bucket(self, subject: str) -> Any:
+        from fastmcp.server.middleware.rate_limiting import TokenBucketRateLimiter
+
+        if subject not in self._buckets:
+            self._buckets[subject] = TokenBucketRateLimiter(
+                capacity=self._burst, refill_rate=self._rps
+            )
+        return self._buckets[subject]
+
+    async def on_call_tool(self, context: MiddlewareContext[Any], call_next: Any) -> Any:
+        caller = current_caller()
+        if not await self._bucket(caller.subject).consume():
+            logger.warning("rate limited %s calling %s", caller.subject, context.message.name)
+            # A ToolError rather than a transport-level rejection: the caller is a model,
+            # and a message it can act on ("wait and retry") is more useful than a code
+            # it has to infer intent from.
+            raise ToolError(
+                f"rate limit exceeded for {caller.subject!r}: more than "
+                f"{self._rps} tool calls/second. Wait a moment and retry."
+            )
+        return await call_next(context)
