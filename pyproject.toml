@@ -56,6 +56,9 @@ dev = [
     # a runtime dependency (with a non-existent `[dev]` extra), which shipped a testing
     # library to every user of the server.
     "hypothesis>=6.165",
+    # Validates server.json against the vendored MCP Registry schema, so a manifest that
+    # would be rejected at publish time fails in CI instead.
+    "jsonschema>=4.0",
     "ruff>=0.5",
     "mypy>=1.10",
 ]

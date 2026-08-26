@@ -18,24 +18,15 @@ jobs:
       - run: uv run mypy src
       - run: uv run pytest -q
 
-      # A version that disagrees with itself is caught here rather than halfway through
-      # a release, where PyPI has already accepted an immutable version number.
-      - name: Versions must agree across pyproject, package and server.json
+      # tests/test_registry_manifest.py already checks that server.json validates, that
+      # every version string agrees, and that both ownership markers are present. The
+      # only thing it cannot know is the git tag, so that is all that is checked here.
+      - name: Tag must match the version the manifest declares
         run: |
           TAG="${GITHUB_REF_NAME#v}"
-          PY=$(uv run python -c "import tomllib,pathlib;print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")
-          PKG=$(uv run python -c "import pgops;print(pgops.__version__)")
-          SRV=$(uv run python -c "import json,pathlib;d=json.loads(pathlib.Path('server.json').read_text());print(d['version'])")
-          SRVPKG=$(uv run python -c "import json,pathlib;d=json.loads(pathlib.Path('server.json').read_text());print([p.get('version','') for p in d['packages'] if p['registryType']=='pypi'][0])")
-          echo "tag=$TAG pyproject=$PY package=$PKG server.json=$SRV server.json[pypi]=$SRVPKG"
-          test "$TAG" = "$PY" && test "$TAG" = "$PKG" && test "$TAG" = "$SRV" && test "$TAG" = "$SRVPKG"
-
-      # The MCP Registry verifies PyPI ownership by looking for this exact marker in the
-      # package README, which becomes the PyPI description. Losing it during a docs edit
-      # would break publishing in a way that is confusing after the fact.
-      - name: README must carry the registry ownership marker
-        run: |
-          grep -q 'mcp-name: io.github.arzharch/pgops-mcp' README.md
+          SRV=$(uv run python -c "import json,pathlib;print(json.loads(pathlib.Path('server.json').read_text())['version'])")
+          echo "tag=$TAG server.json=$SRV"
+          test "$TAG" = "$SRV"
 
   pypi:
     needs: verify

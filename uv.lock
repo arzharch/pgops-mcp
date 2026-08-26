@@ -1633,6 +1633,7 @@ dependencies = [
 [package.optional-dependencies]
 dev = [
     { name = "hypothesis" },
+    { name = "jsonschema" },
     { name = "mypy" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -1652,6 +1653,7 @@ requires-dist = [
     { name = "docker", specifier = ">=7.0" },
     { name = "fastmcp", specifier = ">=2.3" },
     { name = "hypothesis", marker = "extra == 'dev'", specifier = ">=6.165" },
+    { name = "jsonschema", marker = "extra == 'dev'", specifier = ">=4.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10" },
     { name = "opentelemetry-exporter-otlp-proto-grpc", marker = "extra == 'otel'", specifier = ">=1.25" },
     { name = "opentelemetry-sdk", marker = "extra == 'otel'", specifier = ">=1.25" },
