@@ -9,31 +9,42 @@ Desktop, Cursor, VS Code, or the MCP Inspector.
 
 | Requirement | Version | Notes |
 |---|---|---|
-| Python | 3.12+ | managed automatically by `uv` if missing |
-| [uv](https://docs.astral.sh/uv/) | latest | `pip install uv` or `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
+| [uv](https://docs.astral.sh/uv/) | latest | `pip install uv` or `curl -LsSf https://astral.sh/uv/install.sh \| sh` — brings its own Python |
 | PostgreSQL | 16+ | local, Docker, or remote — anything reachable via a DSN |
-| Node.js | 18+ | only needed for the MCP Inspector (optional) |
-| Docker | any recent | only needed for the dev seed stack and `env.*` tools |
+| Docker | any recent | only for the `env.*` / `container.*` tools and the dev seed stack |
+| Node.js | 18+ | only for the MCP Inspector (optional) |
+
+Python is not a separate prerequisite: `uvx` fetches a suitable interpreter itself, and
+the container image carries its own.
 
 ---
 
 ## 1. Install
 
-```bash
-git clone <repo-url> pgops-mcp
-cd pgops-mcp
-uv sync          # creates .venv and installs everything, including dev deps
-```
+pgops-mcp is an MCP **server**, not a library — there is nothing to import and nothing
+to add to your project's dependencies. Pick a delivery method:
 
-Verify the install:
+**`uvx` (recommended).** Nothing is installed permanently; each run fetches a pinned
+environment:
 
 ```bash
-uv run pytest -q            # 371 tests; needs Docker for testcontainers
-uv run ruff check .
-uv run mypy src
+uvx pgops-mcp --selfcheck --dsn "postgresql://user:pass@localhost:5432/mydb"
 ```
 
-If you don't want to run the full suite, skip straight to step 2.
+**Container**, if you would rather keep a Python toolchain off this machine:
+
+```bash
+docker run --rm -e PGOPS_DSN="postgresql://user:pass@host.docker.internal:5432/mydb"   ghcr.io/arzharch/pgops-mcp:latest --selfcheck
+```
+
+**Persistent install**, if you want a `pgops-mcp` on your PATH:
+
+```bash
+uv tool install pgops-mcp
+```
+
+To work on pgops-mcp itself rather than use it, see
+[CONTRIBUTING.md](CONTRIBUTING.md) — that is the `git clone` + `uv sync` path.
 
 ---
 

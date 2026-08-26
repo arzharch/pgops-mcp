@@ -45,10 +45,12 @@ root-equivalent on the host, so the default is read-only access.
 
 | Primitive | What's here |
 |---|---|
-| **Tools** | 13 — schema, query, explain, advise, migrate, environment |
+| **Tools** | 17 — schema, query, explain, advise, migrate, environment |
 | **Resources** | `pgops://schema`, `schema/summary`, `schema/{table}`, `health`, `migrations`, `audit/recent`, `config` |
 | **Prompts** | `diagnose-slow-query`, `plan-safe-migration`, `incident-triage`, `review-index-health`, `explain-safety-model` |
 | **Elicitation** | Dangerous actions ask the **user** directly, not via the agent; confirmation tokens are the fallback |
+| **Sampling** | `migration.describe` turns English into a plan using *your* model — this server ships no API key |
+| **Completions** | Table-name autocomplete for `pgops://schema/{table}` |
 | **Progress / logging** | Best-effort notifications during long operations |
 
 ## Remote access & agent tokens
@@ -70,30 +72,61 @@ Scopes (`pgops:read` / `pgops:write` / `pgops:admin`) map to the same danger tie
 guardrails, and a tool with no scope entry requires `admin` — deny by default. Binds
 loopback unless you say otherwise.
 
-## Quickstart
+## Install
 
-See **[SETUP.md](SETUP.md)** for the complete guide — install, configuration, client
-wiring (Claude Desktop / Cursor / VS Code / Inspector / HTTP), and troubleshooting.
+`pgops-mcp` is an MCP server, not a Python library — nothing in it is meant to be
+imported, and `pgops.*` carries no API-stability promise. You install it the way you
+install any MCP server: point your client at it.
 
-```bash
-uv sync
-cp .env.example .env      # then set PGOPS_DSN
-uv run pgops-mcp --selfcheck --dsn "postgresql://user:pass@localhost:5432/mydb"
-uv run pgops-mcp            # stdio transport for Claude Desktop / Cursor / VS Code
-```
-
-Add to Claude Desktop:
+**Claude Desktop / Cursor / VS Code:**
 
 ```json
 {
   "mcpServers": {
     "pgops": {
-      "command": "uv",
-      "args": ["run", "--directory", "/path/to/pgops-mcp", "pgops-mcp"]
+      "command": "uvx",
+      "args": ["pgops-mcp"],
+      "env": { "PGOPS_DSN": "postgresql://user:pass@localhost:5432/mydb" }
     }
   }
 }
 ```
+
+`uvx` fetches and runs it in a throwaway environment — nothing to install first, and
+nothing added to your own project's dependencies.
+
+**Or run the container**, if you would rather not put a Python toolchain on the machine
+that talks to your database:
+
+```json
+{
+  "mcpServers": {
+    "pgops": {
+      "command": "docker",
+      "args": [
+        "run", "-i", "--rm",
+        "-e", "PGOPS_DSN",
+        "-v", "pgops-audit:/var/lib/pgops",
+        "ghcr.io/arzharch/pgops-mcp:latest"
+      ],
+      "env": { "PGOPS_DSN": "postgresql://user:pass@host.docker.internal:5432/mydb" }
+    }
+  }
+}
+```
+
+Two things the container changes: mount a volume at `/var/lib/pgops` or the audit log
+dies with the container, and `localhost` inside a container is the container itself —
+use `host.docker.internal` or a compose service name.
+
+**Check the connection before wiring a client to it:**
+
+```bash
+uvx pgops-mcp --selfcheck --dsn "postgresql://user:pass@localhost:5432/mydb"
+```
+
+See **[SETUP.md](SETUP.md)** for configuration, HTTP transport, agent tokens and
+troubleshooting, and [CONTRIBUTING.md](CONTRIBUTING.md) to run it from a source checkout.
 
 ## Docs
 
@@ -115,7 +148,7 @@ Add to Claude Desktop:
 
 ## Status
 
-**Phases 0–6b complete** (371 tests, every guardrail, verdict and lock-impact rule proven
+**Phases 0–6f complete** (436 tests, every guardrail, verdict and lock-impact rule proven
 against real Postgres via testcontainers — no mocks — plus end-to-end suites driving the
 server as a real MCP subprocess over stdio and as an authenticated HTTP server, verified
 through the MCP Inspector).
@@ -126,13 +159,14 @@ through the MCP Inspector).
 | 1 · Connection core + read path | ✅ | `schema.inspect`, `query.read`, `db.health` |
 | 2 · Write path + safety | ✅ | `query.write`, guardrails, confirmation tokens, audit log |
 | 3 · Performance brain | ✅ | `query.explain` (plan verdicts), `index.advise` |
-| 4 · Migration engine | ✅ | `migration.plan` (lock analysis + dry run), `apply`, `history` |
+| 4 · Migration engine | ✅ | `migration.plan` (lock analysis + dry run), `apply`, `rollback`, `history` |
 | 5 · Docker layer | ✅ | `env.topology`, `env.correlate`, `container.logs/stats/restart/exec` |
-| 6a · MCP completeness | ✅ | resources, prompts, elicitation, progress |
-| 6b · Remote + auth | ✅ | HTTP transport, JWT, scoped agent tokens, keygen CLI |
-| 6c · Packaging | next | PyPI, Smithery, MCP registry |
-
-`migration.rollback` is deliberately still open — see [`docs/API.md`](docs/API.md).
+| 6a · MCP completeness | ✅ | resources, prompts, elicitation, sampling, completions, progress |
+| 6b · Remote + auth | ✅ | HTTP transport, JWT, per-tool scope enforcement, keygen CLI |
+| 6c · Observability | ✅ | OTel spans/metrics, liveness/readiness endpoints (all optional) |
+| 6d · Adversarial testing | ✅ | red-team suite, property-based tests, live evals in CI |
+| 6e · Forensics | ✅ | `pgops-mcp replay` — the audit log as an executable record |
+| 6f · Distribution | ✅ | PyPI package, container image, `server.json` for the MCP Registry |
 
 Sample of what `migration.plan` returns for a type change on the 1.2M-row `orders`:
 
