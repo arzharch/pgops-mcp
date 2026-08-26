@@ -1621,17 +1621,18 @@ wheels = [
 
 [[package]]
 name = "pgops-mcp"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "." }
 dependencies = [
     { name = "asyncpg" },
+    { name = "docker" },
     { name = "fastmcp" },
-    { name = "hypothesis" },
     { name = "sqlparse" },
 ]
 
 [package.optional-dependencies]
 dev = [
+    { name = "hypothesis" },
     { name = "mypy" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -1648,8 +1649,9 @@ otel = [
 requires-dist = [
     { name = "aiohttp", marker = "extra == 'otel'", specifier = ">=3.9" },
     { name = "asyncpg", specifier = ">=0.29" },
+    { name = "docker", specifier = ">=7.0" },
     { name = "fastmcp", specifier = ">=2.3" },
-    { name = "hypothesis", extras = ["dev"], specifier = ">=6.165.10" },
+    { name = "hypothesis", marker = "extra == 'dev'", specifier = ">=6.165" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10" },
     { name = "opentelemetry-exporter-otlp-proto-grpc", marker = "extra == 'otel'", specifier = ">=1.25" },
     { name = "opentelemetry-sdk", marker = "extra == 'otel'", specifier = ">=1.25" },

@@ -1,17 +1,42 @@
 [project]
 name = "pgops-mcp"
-version = "0.1.0"
+version = "0.1.1"
 description = "Production-grade MCP server: safe, audited PostgreSQL operations + Docker environment awareness for AI agents."
 readme = "README.md"
 requires-python = ">=3.12"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "Arsh Zakee Chowhan" }]
+keywords = ["mcp", "model-context-protocol", "postgres", "postgresql", "database", "docker"]
+
+# pgops-mcp is an MCP *server*, not a Python library: nothing here is meant to be
+# imported by other code, and `pgops.*` carries no API stability promise. PyPI is the
+# delivery channel — it is what makes `uvx pgops-mcp` work, and the MCP Registry stores
+# only metadata and needs a real package to point at. Hence "Application", and no
+# "Libraries :: Python Modules" topic, which would advertise an import surface that
+# does not exist.
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Database",
+    "Topic :: Database :: Database Engines/Servers",
+    "Topic :: System :: Systems Administration",
+]
+urls = { Homepage = "https://github.com/arzharch/pgops-mcp", Repository = "https://github.com/arzharch/pgops-mcp", Issues = "https://github.com/arzharch/pgops-mcp/issues" }
 dependencies = [
     "fastmcp>=2.3",
     "asyncpg>=0.29",
     "sqlparse>=0.5",
-    # Phase 5 adds: docker
-    "hypothesis[dev]>=6.165.10",
+    # Required, not optional: six of the seventeen tools (env.*, container.*) import it,
+    # and it previously reached the venv only as a transitive dependency of
+    # testcontainers — a dev-only package. A user installing from PyPI would have had
+    # every environment tool fail on ImportError.
+    "docker>=7.0",
 ]
 
 [project.scripts]
@@ -27,6 +52,10 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "testcontainers[postgres]>=4.0",
+    # Property-based tests of the safety core. Test-only — it was previously declared as
+    # a runtime dependency (with a non-existent `[dev]` extra), which shipped a testing
+    # library to every user of the server.
+    "hypothesis>=6.165",
     "ruff>=0.5",
     "mypy>=1.10",
 ]
