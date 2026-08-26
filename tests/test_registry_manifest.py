@@ -118,3 +118,52 @@ def test_pypi_entry_hints_the_runner(manifest: dict[str, Any]) -> None:
     pypi = next(p for p in manifest["packages"] if p["registryType"] == "pypi")
     assert pypi["runtimeHint"] == "uvx"
     assert pypi["transport"]["type"] == "stdio"
+
+
+# --- the manifest and the workflow that publishes it must agree ------------------------
+# Regression test for the v0.1.1 release failure. Every check above passed, because they
+# only compared server.json against itself and against the source tree. Nothing compared
+# it against the *workflow*, which tagged the image `${{ github.ref_name }}` — `v0.1.1`,
+# with the prefix — while the manifest pointed at `0.1.1`. PyPI and GHCR both published
+# successfully and the registry then refused the manifest:
+#
+#     OCI image 'ghcr.io/arzharch/pgops-mcp:0.1.1' does not exist in the registry
+#
+# An internally-consistent manifest is not the same thing as a correct one.
+
+WORKFLOW = ROOT / ".github" / "workflows" / "publish.yml"
+
+
+def _workflow() -> str:
+    return WORKFLOW.read_text(encoding="utf-8")
+
+
+def test_workflow_pushes_the_image_the_manifest_points_at(manifest: dict[str, Any]) -> None:
+    """The image repository and the tag expression must both line up."""
+    oci = next(p for p in manifest["packages"] if p["registryType"] == "oci")
+    repository, tag = oci["identifier"].rsplit(":", 1)
+    workflow = _workflow()
+
+    assert repository in workflow, f"{repository} is never pushed by publish.yml"
+    assert tag == manifest["version"]
+    # The workflow must derive the image tag from a version, not from the raw git ref.
+    assert f"{repository}:${{{{ needs.setup.outputs.version }}}}" in workflow
+
+
+def test_workflow_strips_the_v_prefix_from_the_tag() -> None:
+    """`v0.1.1` is a git tag; `0.1.1` is a version. server.json, PyPI and OCI all use the
+    bare semver, and conflating them is what broke the first release."""
+    assert '"version=${TAG#v}"' in _workflow()
+
+
+def test_workflow_never_tags_the_image_with_a_raw_git_ref() -> None:
+    workflow = _workflow()
+    assert "pgops-mcp:${{ github.ref_name }}" not in workflow
+
+
+def test_publish_jobs_are_idempotent() -> None:
+    """A release that fails partway must be re-runnable. PyPI versions are immutable, so
+    without skip-existing a retry dies before the jobs that actually needed retrying."""
+    workflow = _workflow()
+    assert "skip-existing: true" in workflow
+    assert "gh release edit" in workflow, "re-running must update the release, not fail"
