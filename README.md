@@ -68,7 +68,7 @@ operating databases today are doing it blind, and without guardrails.
 engine → performance diagnosis → environment awareness**, with a safety architecture that
 makes every action classifiable, confirmable, and auditable.
 
-**New here?** [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md) is a 15-minute guided
+**New here?** [docs/GETTING_STARTED.md](https://github.com/arzharch/pgops-mcp/blob/main/docs/GETTING_STARTED.md) is a 15-minute guided
 tour that assumes no MCP knowledge.
 
 ## Tool surface
@@ -184,26 +184,39 @@ Both paths install the same server and are listed together in the
 people. `uvx` needs nothing preinstalled but assumes the host may run Python; the
 container assumes only Docker.
 
-See **[SETUP.md](SETUP.md)** for configuration, HTTP transport, agent tokens and
-troubleshooting, and [CONTRIBUTING.md](CONTRIBUTING.md) to run it from a source checkout.
+See **[SETUP.md](https://github.com/arzharch/pgops-mcp/blob/main/SETUP.md)** for configuration, HTTP transport, agent tokens and
+troubleshooting, and [CONTRIBUTING.md](https://github.com/arzharch/pgops-mcp/blob/main/CONTRIBUTING.md) to run it from a source checkout.
 
 ## Docs
 
-**For users:**
+Links are absolute so they resolve from the PyPI project page as well as from GitHub.
 
-- **[docs/API.md](docs/API.md)** — full tool catalog: parameters, returns, error codes, scopes
-- [docs/BENCHMARKS.md](docs/BENCHMARKS.md) — what the benchmarks measure and what they are compared against
-- [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md) — first 15 minutes, guided tour
-- [SETUP.md](SETUP.md) — full setup guide: config, clients, HTTP auth, observability, troubleshooting
-- [.env.example](.env.example) — every environment variable, documented
+**Using it**
 
-**Internal (design & process):**
+| Doc | What's in it |
+|---|---|
+| [Getting started](https://github.com/arzharch/pgops-mcp/blob/main/docs/GETTING_STARTED.md) | First 15 minutes, no MCP knowledge assumed |
+| [Tool reference](https://github.com/arzharch/pgops-mcp/blob/main/docs/API.md) | All 17 tools: parameters, returns, error codes, scopes |
+| [Setup & configuration](https://github.com/arzharch/pgops-mcp/blob/main/SETUP.md) | Clients, HTTP auth, observability, troubleshooting |
+| [Environment variables](https://github.com/arzharch/pgops-mcp/blob/main/.env.example) | Every knob, documented |
+| [Security model](https://github.com/arzharch/pgops-mcp/blob/main/SECURITY.md) | What it can do, what it refuses, known limits |
+| [Changelog](https://github.com/arzharch/pgops-mcp/blob/main/CHANGELOG.md) | What changed per release |
 
-- [internal/PRD.md](internal/PRD.md), [internal/SPEC.md](internal/SPEC.md) — product requirements & phased spec
-- [internal/ARCHITECTURE.md](internal/ARCHITECTURE.md), [internal/SYSTEM_DESIGN.md](internal/SYSTEM_DESIGN.md) — design + rendered diagrams
-- [internal/adr/](internal/adr/) — architecture decision records
-- [internal/flow.md](internal/flow.md) — living progress log
-- [internal/interview_prep.md](internal/interview_prep.md) — Q&A companion
+**How it works**
+
+| Doc | What's in it |
+|---|---|
+| [Architecture](https://github.com/arzharch/pgops-mcp/blob/main/docs/ARCHITECTURE.md) | System design and trade-offs |
+| [System design](https://github.com/arzharch/pgops-mcp/blob/main/docs/SYSTEM_DESIGN.md) | The safety pipeline, with diagrams |
+| [Decision records](https://github.com/arzharch/pgops-mcp/blob/main/docs/adr/) | Why each choice was made, and what it cost |
+| [Benchmarks](https://github.com/arzharch/pgops-mcp/blob/main/docs/BENCHMARKS.md) | What is measured, and against what |
+
+**Contributing**
+
+| Doc | What's in it |
+|---|---|
+| [Contributing](https://github.com/arzharch/pgops-mcp/blob/main/CONTRIBUTING.md) | Source checkout, gates, release process |
+| [Module layout](https://github.com/arzharch/pgops-mcp/blob/main/LAYOUT.md) | What each module is for |
 
 ## Status
 

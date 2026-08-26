@@ -24,3 +24,8 @@ keys/
 
 # local benchmark runs (CI uploads its own as artifacts)
 bench-results/
+
+# Working notes — progress log, phased spec, PRD, interview prep. Kept locally, never
+# published: a public repository should show the engineering (docs/, docs/adr/), not the
+# author's running status updates.
+.private/

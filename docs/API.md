@@ -1,6 +1,6 @@
 # TOOLS — Full Tool Catalog
 
-**Status:** v1.0 (target) · Phase mapping in [SPEC.md](../internal/SPEC.md)
+**Status:** v1.0 (target)
 
 Conventions:
 - All tools return structured JSON. Errors are objects: `{"error": {"code", "message", "hint"}}`.

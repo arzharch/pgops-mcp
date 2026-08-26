@@ -170,5 +170,5 @@ More in [SETUP.md §Troubleshooting](../SETUP.md#troubleshooting).
 ## Where to go next
 
 - [`docs/API.md`](API.md) — full catalog of all 15 tools with parameters
-- [`docs/SYSTEM_DESIGN.md`](../internal/SYSTEM_DESIGN.md) — how the safety pipeline works under the hood
+- [`docs/SYSTEM_DESIGN.md`](SYSTEM_DESIGN.md) — how the safety pipeline works under the hood
 - [Remote/team setup](../SETUP.md#http-transport-remote-agents) — HTTP transport + JWT tokens for agents

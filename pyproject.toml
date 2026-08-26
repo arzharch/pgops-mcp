@@ -27,7 +27,6 @@ classifiers = [
     "Topic :: Database :: Database Engines/Servers",
     "Topic :: System :: Systems Administration",
 ]
-urls = { Homepage = "https://github.com/arzharch/pgops-mcp", Repository = "https://github.com/arzharch/pgops-mcp", Issues = "https://github.com/arzharch/pgops-mcp/issues" }
 dependencies = [
     "fastmcp>=2.3",
     "asyncpg>=0.29",
@@ -38,6 +37,19 @@ dependencies = [
     # every environment tool fail on ImportError.
     "docker>=7.0",
 ]
+
+# Rendered as the sidebar on the PyPI project page. The README alone is not enough
+# there: PyPI renders it with no notion of the repository it came from, so a reader who
+# wants the tool reference or the setup guide has nowhere to click. Names matter —
+# PyPI gives "Documentation", "Changelog", "Source" and "Issues" recognised icons.
+[project.urls]
+Homepage = "https://github.com/arzharch/pgops-mcp"
+Documentation = "https://github.com/arzharch/pgops-mcp/blob/main/docs/GETTING_STARTED.md"
+"Tool reference" = "https://github.com/arzharch/pgops-mcp/blob/main/docs/API.md"
+"Setup guide" = "https://github.com/arzharch/pgops-mcp/blob/main/SETUP.md"
+Changelog = "https://github.com/arzharch/pgops-mcp/blob/main/CHANGELOG.md"
+Source = "https://github.com/arzharch/pgops-mcp"
+Issues = "https://github.com/arzharch/pgops-mcp/issues"
 
 [project.scripts]
 pgops-mcp = "pgops.__main__:main"

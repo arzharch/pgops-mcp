@@ -200,8 +200,8 @@ If #4 executes instead of refusing, stop and check you're running the right serv
 
 pgops-mcp is a **local-first developer tool**, not a horizontally-scaled service. That's
 a deliberate design decision, documented honestly in
-[`internal/SYSTEM_DESIGN.md` §4](internal/SYSTEM_DESIGN.md#4-deployment-topology---what-scales-and-what-doesnt)
-and [ADR-006](internal/adr/ADR-006.md):
+[`docs/SYSTEM_DESIGN.md` §4](docs/SYSTEM_DESIGN.md#4-deployment-topology---what-scales-and-what-doesnt)
+and [ADR-006](docs/adr/ADR-006.md):
 
 - ✅ One engineer, one or a few databases, one or more MCP clients — the intended use,
   fully supported.

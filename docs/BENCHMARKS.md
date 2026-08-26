@@ -60,4 +60,6 @@ single-call p50 — it deliberately does *not* fabricate per-call samples.
 
 The first run of this suite found a real authorization bug: a confirmation token issued
 for a refused statement could be redeemed on any allowed statement. That finding is the
-strongest argument for the suite — see `internal/flow.md`, Phase 6e.
+strongest argument for the suite: token binding was correct in the unit tests and
+wrong end to end, because only a live server exercises the path where a token issued
+by one tool is presented to another.

@@ -27,7 +27,7 @@ uv run mypy src
 
 The suite needs Docker because the guardrail tests run against a real PostgreSQL 16
 container rather than mocks. That is a deliberate architectural decision, not an
-oversight — see [internal/adr/](internal/adr/) (ADR-005). A guardrail that is only ever
+oversight — see [docs/adr/](docs/adr/) (ADR-005). A guardrail that is only ever
 proven against a fake has been proven against the wrong thing: the interesting failures
 (`default_transaction_read_only`, lock escalation, transactional DDL, `relfilenode`
 changes on rewrite) are behaviours of the real database.
