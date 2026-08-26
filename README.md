@@ -1,7 +1,9 @@
 # pgops-mcp
 
+<!-- mcp-name: io.github.arzharch/pgops-mcp -->
+
 > A production-grade MCP server that gives AI agents safe, audited, expert-level control
-> over a real PostgreSQL database and the Docker stack around it â€” no shell commands,
+> over a real PostgreSQL database and the Docker stack around it — no shell commands,
 > no Python scripts, just tools.
 
 ## Why
@@ -11,30 +13,30 @@ migrations with lock-impact analysis, none diagnose performance from `EXPLAIN` +
 `pg_stat_statements`, none understand the containerized environment the database lives in.
 Agents operating databases today are flying blind and unsafe.
 
-`pgops-mcp` is the operations brain: **schema intelligence â†’ guarded queries â†’ migration
-engine â†’ performance diagnosis â†’ environment awareness**, with a safety architecture that
+`pgops-mcp` is the operations brain: **schema intelligence → guarded queries → migration
+engine → performance diagnosis → environment awareness**, with a safety architecture that
 makes every action classifiable, confirmable, and auditable.
 
-## Tool surface (v0.1)
+## Tool surface
 
 | Group | Tools |
 |---|---|
 | Schema | `schema.inspect` |
 | Queries | `query.read`, `query.write` (guarded), `query.explain` (parsed plan + verdict) |
 | Performance | `index.advise`, `db.health` |
-| Migrations | `migration.plan` (dry-run + lock analysis), `migration.apply`, `migration.history` |
+| Migrations | `migration.plan` (dry-run + lock analysis), `migration.describe` (plain English), `migration.apply`, `migration.rollback`, `migration.history` |
 | Environment | `env.topology`, `env.correlate`, `container.logs`, `container.stats` |
 | Gated | `container.restart`*, `container.exec`* |
 
 \* Not registered at all unless the server runs with `--approval-mode`, and even then
 each call needs a confirmation token. `container.exec` additionally enforces a read-only
-diagnostic command allowlist â€” it does not offer a shell. The Docker socket is
+diagnostic command allowlist — it does not offer a shell. The Docker socket is
 root-equivalent on the host, so the default is read-only access.
 
 ## Safety model (the core differentiator)
 
 - Separate read-only / read-write connection roles; tools bind to the right role
-- Statement classification before execution â€” unbounded `DELETE`/`UPDATE` blocked
+- Statement classification before execution — unbounded `DELETE`/`UPDATE` blocked
 - Destructive actions require explicit confirmation tokens
 - Every executed statement lands in an append-only audit log with timing and verdict
 - Runaway-query cancellation with timeout tiers
@@ -43,7 +45,7 @@ root-equivalent on the host, so the default is read-only access.
 
 | Primitive | What's here |
 |---|---|
-| **Tools** | 13 â€” schema, query, explain, advise, migrate, environment |
+| **Tools** | 13 — schema, query, explain, advise, migrate, environment |
 | **Resources** | `pgops://schema`, `schema/summary`, `schema/{table}`, `health`, `migrations`, `audit/recent`, `config` |
 | **Prompts** | `diagnose-slow-query`, `plan-safe-migration`, `incident-triage`, `review-index-health`, `explain-safety-model` |
 | **Elicitation** | Dangerous actions ask the **user** directly, not via the agent; confirmation tokens are the fallback |
@@ -51,7 +53,7 @@ root-equivalent on the host, so the default is read-only access.
 
 ## Remote access & agent tokens
 
-stdio needs no auth â€” the server is a subprocess your client spawns, with no open port.
+stdio needs no auth — the server is a subprocess your client spawns, with no open port.
 HTTP does, so it refuses to start without a key:
 
 ```bash
@@ -65,12 +67,12 @@ pgops-mcp --transport http --public-key ~/.pgops/keys/pgops_public.pem
 
 The server holds only the **public** key, so it can verify tokens but never mint them.
 Scopes (`pgops:read` / `pgops:write` / `pgops:admin`) map to the same danger tiers as the
-guardrails, and a tool with no scope entry requires `admin` â€” deny by default. Binds
+guardrails, and a tool with no scope entry requires `admin` — deny by default. Binds
 loopback unless you say otherwise.
 
 ## Quickstart
 
-See **[SETUP.md](SETUP.md)** for the complete guide â€” install, configuration, client
+See **[SETUP.md](SETUP.md)** for the complete guide — install, configuration, client
 wiring (Claude Desktop / Cursor / VS Code / Inspector / HTTP), and troubleshooting.
 
 ```bash
@@ -113,24 +115,24 @@ Add to Claude Desktop:
 
 ## Status
 
-**Phases 0â€“6b complete** (371 tests, every guardrail, verdict and lock-impact rule proven
-against real Postgres via testcontainers â€” no mocks â€” plus end-to-end suites driving the
+**Phases 0–6b complete** (371 tests, every guardrail, verdict and lock-impact rule proven
+against real Postgres via testcontainers — no mocks — plus end-to-end suites driving the
 server as a real MCP subprocess over stdio and as an authenticated HTTP server, verified
 through the MCP Inspector).
 
 | Phase | State | Tools |
 |---|---|---|
-| 0 Â· Bootstrap | âœ… | seeded dev stack (1.2M-row `orders`), CI, lint/type gates |
-| 1 Â· Connection core + read path | âœ… | `schema.inspect`, `query.read`, `db.health` |
-| 2 Â· Write path + safety | âœ… | `query.write`, guardrails, confirmation tokens, audit log |
-| 3 Â· Performance brain | âœ… | `query.explain` (plan verdicts), `index.advise` |
-| 4 Â· Migration engine | âœ… | `migration.plan` (lock analysis + dry run), `apply`, `history` |
-| 5 Â· Docker layer | âœ… | `env.topology`, `env.correlate`, `container.logs/stats/restart/exec` |
-| 6a Â· MCP completeness | âœ… | resources, prompts, elicitation, progress |
-| 6b Â· Remote + auth | âœ… | HTTP transport, JWT, scoped agent tokens, keygen CLI |
-| 6c Â· Packaging | next | PyPI, Smithery, MCP registry |
+| 0 · Bootstrap | ✅ | seeded dev stack (1.2M-row `orders`), CI, lint/type gates |
+| 1 · Connection core + read path | ✅ | `schema.inspect`, `query.read`, `db.health` |
+| 2 · Write path + safety | ✅ | `query.write`, guardrails, confirmation tokens, audit log |
+| 3 · Performance brain | ✅ | `query.explain` (plan verdicts), `index.advise` |
+| 4 · Migration engine | ✅ | `migration.plan` (lock analysis + dry run), `apply`, `history` |
+| 5 · Docker layer | ✅ | `env.topology`, `env.correlate`, `container.logs/stats/restart/exec` |
+| 6a · MCP completeness | ✅ | resources, prompts, elicitation, progress |
+| 6b · Remote + auth | ✅ | HTTP transport, JWT, scoped agent tokens, keygen CLI |
+| 6c · Packaging | next | PyPI, Smithery, MCP registry |
 
-`migration.rollback` is deliberately still open â€” see [`docs/API.md`](docs/API.md).
+`migration.rollback` is deliberately still open — see [`docs/API.md`](docs/API.md).
 
 Sample of what `migration.plan` returns for a type change on the 1.2M-row `orders`:
 

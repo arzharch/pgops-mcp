@@ -1,6 +1,6 @@
 # Setup Guide
 
-Complete setup for pgops-mcp â€” from a clean machine to a working MCP server in Claude
+Complete setup for pgops-mcp — from a clean machine to a working MCP server in Claude
 Desktop, Cursor, VS Code, or the MCP Inspector.
 
 ---
@@ -11,7 +11,7 @@ Desktop, Cursor, VS Code, or the MCP Inspector.
 |---|---|---|
 | Python | 3.12+ | managed automatically by `uv` if missing |
 | [uv](https://docs.astral.sh/uv/) | latest | `pip install uv` or `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
-| PostgreSQL | 16+ | local, Docker, or remote â€” anything reachable via a DSN |
+| PostgreSQL | 16+ | local, Docker, or remote — anything reachable via a DSN |
 | Node.js | 18+ | only needed for the MCP Inspector (optional) |
 | Docker | any recent | only needed for the dev seed stack and `env.*` tools |
 
@@ -46,7 +46,7 @@ cp .env.example .env
 # then edit .env and set PGOPS_DSN
 ```
 
-The only **required** variable is `PGOPS_DSN`. Everything else has a safe default â€” see
+The only **required** variable is `PGOPS_DSN`. Everything else has a safe default — see
 the comments in `.env.example` for what each knob does and when to change it.
 
 > `.env` is gitignored. Never commit real credentials.
@@ -67,7 +67,7 @@ tables in public schema: 3
   - products: ~500 rows, ...
 ```
 
-If this fails, the DSN is wrong or Postgres isn't reachable â€” fix that before continuing.
+If this fails, the DSN is wrong or Postgres isn't reachable — fix that before continuing.
 
 ---
 
@@ -85,7 +85,7 @@ DSN for the dev stack:
 postgresql://pgops:pgops_dev@localhost:5435/pgops_demo
 ```
 
-Note the port is **5435**, not 5432 â€” chosen deliberately because lower ports were
+Note the port is **5435**, not 5432 — chosen deliberately because lower ports were
 already bound by other Postgres instances on the original dev machine.
 
 ---
@@ -112,7 +112,7 @@ Add to your client's MCP config (e.g. `claude_desktop_config.json`):
 
 Use an absolute path for `--directory`. Restart the client after editing.
 
-Environment variables from `.env` are **not** loaded automatically under stdio â€” the
+Environment variables from `.env` are **not** loaded automatically under stdio — the
 client spawns the process with its own environment, so pass `PGOPS_DSN` in the `env`
 block as shown above.
 
@@ -150,7 +150,7 @@ uv run pgops-mcp issue-token --subject deploy-bot --scope pgops:read --scope pgo
 uv run pgops-mcp --transport http --public-key ~/.pgops/keys/pgops_public.pem
 ```
 
-The server holds only the **public** key â€” it can verify tokens but never mint them.
+The server holds only the **public** key — it can verify tokens but never mint them.
 Binds `127.0.0.1` by default; pass `--host 0.0.0.0` explicitly if you really mean to
 expose it.
 
@@ -166,7 +166,7 @@ uv run pgops-mcp scopes
 | `pgops:write` | query.write, migration.apply, migration.rollback |
 | `pgops:admin` | container.restart, container.exec |
 
-A tool with no scope entry requires `admin` â€” deny by default.
+A tool with no scope entry requires `admin` — deny by default.
 
 ---
 
@@ -174,11 +174,11 @@ A tool with no scope entry requires `admin` â€” deny by default.
 
 From your connected client, try:
 
-1. *"Show me the schema"* â†’ triggers `schema.inspect`
-2. *"How healthy is the database?"* â†’ triggers `db.health`
-3. *"Why is this query slow: SELECT * FROM orders WHERE status='paid'"* â†’ triggers
+1. *"Show me the schema"* → triggers `schema.inspect`
+2. *"How healthy is the database?"* → triggers `db.health`
+3. *"Why is this query slow: SELECT * FROM orders WHERE status='paid'"* → triggers
    `query.explain` with plan verdicts
-4. Attempt `DELETE FROM orders` without a WHERE clause â†’ should be refused with
+4. Attempt `DELETE FROM orders` without a WHERE clause → should be refused with
    `CONFIRMATION_REQUIRED` and a human-readable reason
 
 If #4 executes instead of refusing, stop and check you're running the right server.
@@ -189,14 +189,14 @@ If #4 executes instead of refusing, stop and check you're running the right serv
 
 pgops-mcp is a **local-first developer tool**, not a horizontally-scaled service. That's
 a deliberate design decision, documented honestly in
-[`internal/SYSTEM_DESIGN.md` Â§4](internal/SYSTEM_DESIGN.md#4-deployment-topology---what-scales-and-what-doesnt)
+[`internal/SYSTEM_DESIGN.md` §4](internal/SYSTEM_DESIGN.md#4-deployment-topology---what-scales-and-what-doesnt)
 and [ADR-006](internal/adr/ADR-006.md):
 
-- âœ… One engineer, one or a few databases, one or more MCP clients â€” the intended use,
+- ✅ One engineer, one or a few databases, one or more MCP clients — the intended use,
   fully supported.
-- âš ï¸ Several clients sharing one server â€” works; writes serialize and the audit log is
+- ⚠️ Several clients sharing one server — works; writes serialize and the audit log is
   shared. Fine for a team pointing at a shared dev database.
-- âŒ Multi-tenant SaaS / many users Ã— many databases â€” not built. Auth identifies *who*
+- ❌ Multi-tenant SaaS / many users × many databases — not built. Auth identifies *who*
   but every caller shares one connection manager; plan/token state is in-memory so
   instances can't share it.
 
@@ -216,7 +216,7 @@ it doesn't provide.
 ## 7. Observability (optional)
 
 The server emits OpenTelemetry traces + metrics and serves liveness/readiness endpoints.
-Everything is **off by default** â€” with no env vars set there is zero overhead beyond a
+Everything is **off by default** — with no env vars set there is zero overhead beyond a
 few dict lookups, and telemetry can never break a tool call.
 
 ```bash
@@ -238,16 +238,16 @@ Then:
 
 - **Traces:** open http://localhost:16686, pick service `pgops-mcp`. Every tool call is
   one span with `pgops.verdict` (`executed` / `refused` / `denied` / `failed`) and, on
-  refusals, `pgops.error_code`. Scope denials are spans too â€” a spike usually means a
+  refusals, `pgops.error_code`. Scope denials are spans too — a spike usually means a
   misconfigured agent or a rotated token missing its scopes.
 - **Metrics:** `pgops.tool.calls` (by tool, verdict, caller), `pgops.tool.duration`,
   `pgops.pool.timeouts`, `pgops.db.up`.
-- **Health:** `GET :8080/health` (liveness â€” restart me if this fails) and
-  `GET :8080/ready` (readiness â€” Postgres reachable right now; returns 503 when it
+- **Health:** `GET :8080/health` (liveness — restart me if this fails) and
+  `GET :8080/ready` (readiness — Postgres reachable right now; returns 503 when it
   isn't). Wire these into a compose healthcheck or process manager.
 
 If Jaeger/collector is down, export failures are logged warnings; tool calls are
-unaffected. The audit log remains the system of record â€” this layer is the *operational*
+unaffected. The audit log remains the system of record — this layer is the *operational*
 view (latency, error rates), complementary to the *forensic* view (who did what).
 
 ---
@@ -256,14 +256,14 @@ view (latency, error rates), complementary to the *forensic* view (who did what)
 
 **`DSN_MISSING` on startup**
 No `PGOPS_DSN` in the environment. Under stdio, remember the client's `env` block is
-what counts â€” a shell export in your terminal doesn't reach the spawned server.
+what counts — a shell export in your terminal doesn't reach the spawned server.
 
 **`CONNECTION_FAILED: could not connect readonly pool`**
 Postgres unreachable or credentials wrong. Test the DSN directly:
 `psql "$PGOPS_DSN" -c "SELECT 1"`.
 
 **Tests fail with Docker errors**
-The suite uses testcontainers â€” Docker must be running. On Windows, make sure Docker
+The suite uses testcontainers — Docker must be running. On Windows, make sure Docker
 Desktop is up before `uv run pytest`.
 
 **Port 5435 already in use (dev stack)**
@@ -271,9 +271,9 @@ Another container is bound there. Either stop it or edit `docker-compose.yml`.
 
 **Audit log location**
 Default is `~/.pgops/audit.jsonl`. Override with `PGOPS_AUDIT_LOG`. Every executed
-statement *and every refusal* lands here â€” this is the file an incident review reads.
+statement *and every refusal* lands here — this is the file an incident review reads.
 
 **Client doesn't show the tools**
 Check the client's MCP logs. The most common cause is a stray `print()` somewhere
-corrupting the stdio protocol stream â€” pgops logs everything to stderr for exactly this
+corrupting the stdio protocol stream — pgops logs everything to stderr for exactly this
 reason, but a wrapper script might not.

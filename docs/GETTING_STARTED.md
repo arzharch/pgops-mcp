@@ -1,4 +1,4 @@
-# Getting Started â€” a new user's first 15 minutes
+# Getting Started — a new user's first 15 minutes
 
 This is the walkthrough for someone who has never seen pgops-mcp before. No prior MCP
 knowledge assumed. (Full setup detail lives in [SETUP.md](SETUP.md); this page is the
@@ -9,19 +9,19 @@ guided tour.)
 ## What you're about to run
 
 pgops-mcp is a **server** that your AI assistant (Claude Desktop, Cursor, VS Code)
-launches as a subprocess. The assistant then gains tools it can call â€” safely â€” against
+launches as a subprocess. The assistant then gains tools it can call — safely — against
 your PostgreSQL database. You don't interact with the server directly; you talk to your
 assistant in plain English and it uses the tools.
 
 ```
-You â”€â”€talks toâ”€â”€> Claude/Cursor â”€â”€calls toolsâ”€â”€> pgops-mcp â”€â”€> your Postgres
-                                                    â”‚
-                                                    â””â”€â”€> audit log (~/.pgops/audit.jsonl)
+You ──talks to──> Claude/Cursor ──calls tools──> pgops-mcp ──> your Postgres
+                                                    │
+                                                    └──> audit log (~/.pgops/audit.jsonl)
 ```
 
 ---
 
-## Step 1 â€” Prerequisites check
+## Step 1 — Prerequisites check
 
 ```bash
 python --version   # need 3.12+
@@ -29,9 +29,9 @@ uv --version       # need uv; pip install uv if missing
 psql "$YOUR_DSN" -c "SELECT 1"   # confirm Postgres reachable
 ```
 
-No database handy? Skip ahead â€” Step 3 spins one up.
+No database handy? Skip ahead — Step 3 spins one up.
 
-## Step 2 â€” Install
+## Step 2 — Install
 
 ```bash
 git clone <repo-url> pgops-mcp && cd pgops-mcp
@@ -40,7 +40,7 @@ uv sync
 
 That's the whole install. `uv sync` creates the virtualenv and installs everything.
 
-## Step 3 â€” Get a database (skip if you have one)
+## Step 3 — Get a database (skip if you have one)
 
 ```bash
 docker compose up -d
@@ -55,7 +55,7 @@ postgresql://pgops:pgops_dev@localhost:5435/pgops_demo
 
 (Note port **5435**, not 5432.)
 
-## Step 4 â€” Sanity check before wiring anything
+## Step 4 — Sanity check before wiring anything
 
 ```bash
 uv run pgops-mcp --selfcheck --dsn "postgresql://pgops:pgops_dev@localhost:5435/pgops_demo"
@@ -74,7 +74,7 @@ tables in public schema: 3
 If that works, the server can reach your database. Everything after this is just
 connecting a client.
 
-## Step 5 â€” Connect your AI client
+## Step 5 — Connect your AI client
 
 ### Claude Desktop / Cursor / VS Code
 
@@ -92,8 +92,8 @@ Find your client's MCP config file and add:
 }
 ```
 
-- Config locations: Claude Desktop â†’ `claude_desktop_config.json` (Settings â†’ Developer);
-  Cursor â†’ `.cursor/mcp.json`; VS Code â†’ `.vscode/mcp.json`.
+- Config locations: Claude Desktop → `claude_desktop_config.json` (Settings → Developer);
+  Cursor → `.cursor/mcp.json`; VS Code → `.vscode/mcp.json`.
 - Use an **absolute** path for `--directory`.
 - Restart the client after saving.
 
@@ -103,29 +103,29 @@ Find your client's MCP config file and add:
 npx @modelcontextprotocol/inspector --config inspector.config.json
 ```
 
-Opens a browser UI where you can click through every tool manually â€” useful for seeing
+Opens a browser UI where you can click through every tool manually — useful for seeing
 what the agent will see.
 
-## Step 6 â€” Actually use it
+## Step 6 — Actually use it
 
 Talk to your assistant normally. Things to try, roughly in order of impressiveness:
 
 1. **"Show me the schema"**
-   â†’ calls `schema.inspect`. You'll get tables, columns, sizes.
+   → calls `schema.inspect`. You'll get tables, columns, sizes.
 
 2. **"How healthy is the database?"**
-   â†’ calls `db.health`: connection counts, cache hit ratio, dead tuples, lock waits.
+   → calls `db.health`: connection counts, cache hit ratio, dead tuples, lock waits.
 
 3. **"Why is this query slow? SELECT * FROM orders WHERE status = 'paid'"**
-   â†’ calls `query.explain`, which parses the plan into verdicts like
+   → calls `query.explain`, which parses the plan into verdicts like
    *"sequential scan examined 1,200,000 rows"* and *"sort spilled to disk"*.
 
 4. **"Add a nullable note column to orders"**
-   â†’ calls `migration.plan`. Read what comes back: each step carries a **lock impact
+   → calls `migration.plan`. Read what comes back: each step carries a **lock impact
    estimate** ("metadata-only, microseconds") or a warning ("this rewrites the whole
-   table"). Nothing has been applied yet â€” planning is free and safe.
+   table"). Nothing has been applied yet — planning is free and safe.
 
-5. **The safety demo â€” do this one on purpose:**
+5. **The safety demo — do this one on purpose:**
 
    > "Delete all rows from orders"
 
@@ -150,16 +150,16 @@ Talk to your assistant normally. Things to try, roughly in order of impressivene
 | Symptom | Fix |
 |---|---|
 | Client shows no tools | Check the client's MCP logs; usually a wrong `--directory` path |
-| `DSN_MISSING` at startup | The `env` block in the client config is what counts â€” shell exports don't reach the spawned process |
+| `DSN_MISSING` at startup | The `env` block in the client config is what counts — shell exports don't reach the spawned process |
 | `CONNECTION_FAILED` | Test the DSN directly with `psql` first |
 | Tests fail | They need Docker running (testcontainers) |
 
-More in [SETUP.md Â§Troubleshooting](SETUP.md#troubleshooting).
+More in [SETUP.md §Troubleshooting](SETUP.md#troubleshooting).
 
 ---
 
 ## Where to go next
 
-- [`docs/API.md`](API.md) â€” full catalog of all 15 tools with parameters
-- [`docs/SYSTEM_DESIGN.md`](../internal/SYSTEM_DESIGN.md) â€” how the safety pipeline works under the hood
-- [Remote/team setup](SETUP.md#http-transport-remote-agents) â€” HTTP transport + JWT tokens for agents
+- [`docs/API.md`](API.md) — full catalog of all 15 tools with parameters
+- [`docs/SYSTEM_DESIGN.md`](../internal/SYSTEM_DESIGN.md) — how the safety pipeline works under the hood
+- [Remote/team setup](SETUP.md#http-transport-remote-agents) — HTTP transport + JWT tokens for agents
