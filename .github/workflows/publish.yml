@@ -1,0 +1,97 @@
+name: Publish
+
+# Publishing is tag-gated. The order of jobs is load-bearing rather than tidy: the MCP
+# Registry stores metadata only, and validates that the artifact it points at already
+# exists and carries proof of ownership. Publishing metadata before the package fails.
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --extra dev
+      - run: uv run ruff check .
+      - run: uv run mypy src
+      - run: uv run pytest -q
+
+      # A version that disagrees with itself is caught here rather than halfway through
+      # a release, where PyPI has already accepted an immutable version number.
+      - name: Versions must agree across pyproject, package and server.json
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PY=$(uv run python -c "import tomllib,pathlib;print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")
+          PKG=$(uv run python -c "import pgops;print(pgops.__version__)")
+          SRV=$(uv run python -c "import json,pathlib;d=json.loads(pathlib.Path('server.json').read_text());print(d['version'])")
+          SRVPKG=$(uv run python -c "import json,pathlib;d=json.loads(pathlib.Path('server.json').read_text());print([p.get('version','') for p in d['packages'] if p['registryType']=='pypi'][0])")
+          echo "tag=$TAG pyproject=$PY package=$PKG server.json=$SRV server.json[pypi]=$SRVPKG"
+          test "$TAG" = "$PY" && test "$TAG" = "$PKG" && test "$TAG" = "$SRV" && test "$TAG" = "$SRVPKG"
+
+      # The MCP Registry verifies PyPI ownership by looking for this exact marker in the
+      # package README, which becomes the PyPI description. Losing it during a docs edit
+      # would break publishing in a way that is confusing after the fact.
+      - name: README must carry the registry ownership marker
+        run: |
+          grep -q 'mcp-name: io.github.arzharch/pgops-mcp' README.md
+
+  pypi:
+    needs: verify
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      # Trusted Publishing: PyPI mints a short-lived token for this workflow, so no
+      # long-lived API token has to exist as a repository secret at all.
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv build
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  container:
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          # linux/arm64 as well as amd64: Apple Silicon is a normal developer machine,
+          # and an amd64-only image runs there under emulation or not at all.
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ghcr.io/arzharch/pgops-mcp:${{ github.ref_name }}
+            ghcr.io/arzharch/pgops-mcp:latest
+
+  registry:
+    # Last, and only after both artifacts exist: the registry validates that the PyPI
+    # package and the container image are really published and really ours.
+    needs: [pypi, container]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install mcp-publisher
+        run: |
+          curl -sL "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_linux_amd64.tar.gz" \
+            | tar xz mcp-publisher
+          sudo mv mcp-publisher /usr/local/bin/
+      - run: mcp-publisher validate
+      # GitHub OIDC rather than an interactive login: the namespace is
+      # io.github.arzharch/*, and this repository's identity is what proves ownership.
+      - run: mcp-publisher login github-oidc
+      - run: mcp-publisher publish
