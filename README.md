@@ -218,27 +218,40 @@ Links are absolute so they resolve from the PyPI project page as well as from Gi
 | [Contributing](https://github.com/arzharch/pgops-mcp/blob/main/CONTRIBUTING.md) | Source checkout, gates, release process |
 | [Module layout](https://github.com/arzharch/pgops-mcp/blob/main/LAYOUT.md) | What each module is for |
 
-## Status
+## How it's verified
 
-**Phases 0–6f complete** (436 tests, every guardrail, verdict and lock-impact rule proven
-against real Postgres via testcontainers — no mocks — plus end-to-end suites driving the
-server as a real MCP subprocess over stdio and as an authenticated HTTP server, verified
-through the MCP Inspector).
+**471 tests**, and the ones that matter run against a real PostgreSQL 16 in a
+container — not mocks. That is a deliberate decision ([ADR-005](https://github.com/arzharch/pgops-mcp/blob/main/docs/adr/ADR-005.md)):
+a guardrail proven only against a fake has been proven against the wrong thing. The
+interesting failures — `default_transaction_read_only`, lock escalation, transactional
+DDL, relfilenode changes on rewrite — are behaviours of the real database.
 
-| Phase | State | Tools |
-|---|---|---|
-| 0 · Bootstrap | ✅ | seeded dev stack (1.2M-row `orders`), CI, lint/type gates |
-| 1 · Connection core + read path | ✅ | `schema.inspect`, `query.read`, `db.health` |
-| 2 · Write path + safety | ✅ | `query.write`, guardrails, confirmation tokens, audit log |
-| 3 · Performance brain | ✅ | `query.explain` (plan verdicts), `index.advise` |
-| 4 · Migration engine | ✅ | `migration.plan` (lock analysis + dry run), `apply`, `rollback`, `history` |
-| 5 · Docker layer | ✅ | `env.topology`, `env.correlate`, `container.logs/stats/restart/exec` |
-| 6a · MCP completeness | ✅ | resources, prompts, elicitation, sampling, completions, progress |
-| 6b · Remote + auth | ✅ | HTTP transport, JWT, per-tool scope enforcement, keygen CLI |
-| 6c · Observability | ✅ | OTel spans/metrics, liveness/readiness endpoints (all optional) |
-| 6d · Adversarial testing | ✅ | red-team suite, property-based tests, live evals in CI |
-| 6e · Forensics | ✅ | `pgops-mcp replay` — the audit log as an executable record |
-| 6f · Distribution | ✅ | PyPI package, container image, `server.json` for the MCP Registry |
+| Suite | What it proves |
+|---|---|
+| Guardrails & classifier | Every refusal rule, against live Postgres |
+| Property-based (Hypothesis) | The invariant itself, over inputs nobody thought to write |
+| Red-team | 15 named attacks a hostile agent would try — each refused **and** audited |
+| Live server | Real HTTP server, real JWTs, end to end |
+| Benchmarks | Latency budgets as regression tripwires, published as CI artifacts |
+
+The red-team suite has found real bugs, which is the argument for having it: it caught a
+confirmation token issued for a refused statement being redeemable against a different
+one, and a `pgops:read` token that could call `query.write` because the scope table was
+documentation rather than enforcement.
+
+## Known limits
+
+Stated here rather than left to be discovered:
+
+- **No per-session database isolation.** Auth identifies the caller and scopes limit what
+  they may do, but every caller shares one connection manager and one audit log. Built
+  for one engineer and a few databases, not multi-tenant SaaS.
+- **`index.advise` names the table taking sequential scans, not the column** to index —
+  that needs per-statement plan inspection. It says so instead of inventing a
+  `CREATE INDEX`.
+- **`DROP INDEX` / `DROP CONSTRAINT` cannot be rolled back**, because the object's
+  definition is not captured before the drop. The rollback refuses and explains why
+  rather than reconstructing a guess.
 
 Sample of what `migration.plan` returns for a type change on the 1.2M-row `orders`:
 
@@ -250,11 +263,18 @@ ALTER TABLE "orders" ALTER COLUMN "total_cents" TYPE bigint
          trigger, swap the names, then drop the old column
 ```
 
-Quickstart the dev database (host port **5435**, to avoid colliding with a local
-Postgres on 5432):
+### Try it without a database of your own
+
+A seeded stack with the 1.2M-row `orders` table used in every example above. Host port
+**5435**, so it does not collide with a local Postgres on 5432:
 
 ```bash
+git clone https://github.com/arzharch/pgops-mcp && cd pgops-mcp
 docker compose up -d
-export PGOPS_DSN="postgresql://pgops:pgops_dev@localhost:5435/pgops_demo"
-uv run pgops-mcp --selfcheck
+uvx pgops-mcp --selfcheck --dsn "postgresql://pgops:pgops_dev@localhost:5435/pgops_demo"
 ```
+
+---
+
+MIT licensed. Contributions welcome — see
+[CONTRIBUTING.md](https://github.com/arzharch/pgops-mcp/blob/main/CONTRIBUTING.md).
