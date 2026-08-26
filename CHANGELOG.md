@@ -9,6 +9,51 @@ scopes — not Python symbols.
 
 ## [Unreleased]
 
+## [0.1.2] — 2026-08-27
+
+0.1.1 published to PyPI but never reached the MCP Registry: the workflow tagged the
+container image `v0.1.1` while `server.json` pointed at `0.1.1`, so the registry refused
+the manifest with "OCI image does not exist". PyPI versions are immutable, so the
+metadata and documentation fixes below could not be applied to 0.1.1 and ship here
+instead.
+
+### Fixed
+- **The release workflow tagged the container image from the raw git ref**, publishing
+  `v0.1.1` where every package registry — and `server.json` — uses the bare semver. The
+  version is now derived once and shared by every job, and the registry step verifies the
+  image exists before publishing, so a mismatch fails with a clear message instead of an
+  opaque 400 at the last step.
+- **Release jobs are now idempotent**, so a run that fails partway can be retried:
+  PyPI uploads skip an existing version, and the GitHub release is updated rather than
+  re-created.
+- **The PyPI project page had no working links.** Every link in the README was
+  repository-relative, and PyPI renders the README with no notion of the repository it
+  came from, so all fourteen resolved to nothing. All links are now absolute.
+- **A concurrency benchmark measured the MCP transport rather than the connection pool**,
+  and its budget was derived from a single latency sample. It now compares concurrent to
+  sequential reads over the pool directly.
+
+### Added
+- `project.urls` entries for Documentation, Tool reference, Setup guide and Changelog, so
+  the PyPI page offers a route to the docs.
+- A GitHub Release is now created from the changelog, with an introduction and install
+  instructions for readers arriving at a release page first.
+- `server.json` is validated against the MCP Registry schema in the test suite, and the
+  workflow's image tag is checked against the manifest it publishes.
+
+### Changed
+- Working notes (progress log, phased spec, interview preparation) are no longer part of
+  the published repository. Architecture documentation and decision records moved to
+  `docs/` and remain public.
+- The README leads with worked examples whose numbers are verified against the demo
+  database, and reports what is verified and what the known limits are, rather than an
+  internal phase-completion table.
+
+### Security
+- `pgops-mcp keygen` writes a `.gitignore` into its key directory before the key itself,
+  so a keypair generated inside a project cannot be committed by an unthinking
+  `git add -A`. A private key that reaches a git history has to be treated as compromised.
+
 ## [0.1.1] — 2026-08-27
 
 First release intended for distribution. Everything below is relative to the initial
@@ -72,5 +117,6 @@ development history rather than a previous published version.
 - Container environment variables are never returned by `env.topology` — they hold
   credentials.
 
-[Unreleased]: https://github.com/arzharch/pgops-mcp/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/arzharch/pgops-mcp/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/arzharch/pgops-mcp/releases/tag/v0.1.2
 [0.1.1]: https://github.com/arzharch/pgops-mcp/releases/tag/v0.1.1
