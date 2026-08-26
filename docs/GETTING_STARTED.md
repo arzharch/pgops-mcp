@@ -1,7 +1,7 @@
 # Getting Started — a new user's first 15 minutes
 
 This is the walkthrough for someone who has never seen pgops-mcp before. No prior MCP
-knowledge assumed. (Full setup detail lives in [SETUP.md](SETUP.md); this page is the
+knowledge assumed. (Full setup detail lives in [SETUP.md](../SETUP.md); this page is the
 guided tour.)
 
 ---
@@ -163,7 +163,7 @@ Talk to your assistant normally. Things to try, roughly in order of impressivene
 | `CONNECTION_FAILED` | Test the DSN directly with `psql` first |
 | Tests fail | They need Docker running (testcontainers) |
 
-More in [SETUP.md §Troubleshooting](SETUP.md#troubleshooting).
+More in [SETUP.md §Troubleshooting](../SETUP.md#troubleshooting).
 
 ---
 
@@ -171,4 +171,4 @@ More in [SETUP.md §Troubleshooting](SETUP.md#troubleshooting).
 
 - [`docs/API.md`](API.md) — full catalog of all 15 tools with parameters
 - [`docs/SYSTEM_DESIGN.md`](../internal/SYSTEM_DESIGN.md) — how the safety pipeline works under the hood
-- [Remote/team setup](SETUP.md#http-transport-remote-agents) — HTTP transport + JWT tokens for agents
+- [Remote/team setup](../SETUP.md#http-transport-remote-agents) — HTTP transport + JWT tokens for agents
