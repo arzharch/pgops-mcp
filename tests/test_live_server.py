@@ -366,37 +366,103 @@ async def test_bench_denial_fast_path(live_server: LiveServer) -> None:
 
 
 async def test_bench_concurrent_reads_no_serialization(
-    live_server: LiveServer, conn_manager: Any
+    live_server: LiveServer, conn_manager: Any, config: Any
 ) -> None:
-    """10 concurrent reads must overlap, not serialize: wall time for the batch should
-    be well under 10x a single call. Catches pool sizing regressions and accidental
-    global locks."""
-    token = live_server.token("bench-concurrent", [Scope.READ.value])
-    single = Bench(name="single(read)")
-    async with Client(live_server.url, auth=token) as client:
-        await _timed_call(client, single, "query.read", {"sql": "SELECT pg_sleep(0)"})
+    """Concurrent reads must genuinely overlap — no pool exhaustion, no global lock.
 
+    Three things about this test were wrong before, and each is worth stating because
+    the fix for each was different:
+
+    1. **It measured the wrong layer.** It timed ten concurrent *MCP tool calls* and
+       called the result evidence about the connection pool. Measured directly:
+
+           single read p50                   19 ms
+           10 sequential, one MCP session   148 ms   ( 7.8x)
+           10 concurrent, one MCP session   314 ms   (16.5x)   <- worse than sequential
+           10 concurrent, pool only           9 ms
+
+       The pool overlaps ten queries in less time than one MCP round trip takes. The
+       number the test gated on was request multiplexing inside a single streamable-HTTP
+       session — a property of the client, not of this server — and under ~300ms of
+       transport cost a genuine pool regression would have been invisible anyway.
+
+    2. **Its baseline was one sample**, used as the divisor of the budget, so the
+       threshold moved with the noise in that single measurement. It passed alone and
+       failed inside the full suite.
+
+    3. **It never warmed the pool.** asyncpg opens at `readonly_min` (1) and grows on
+       demand, so the first concurrent burst pays connection establishment for four more
+       sockets — tens of milliseconds against a container, which looks exactly like
+       serialization and is nothing of the kind. Sequential warm-up does not help: it
+       reuses the one connection and the pool never grows.
+
+    What it asserts now is concurrent-versus-sequential over the pool, with each read
+    given real duration by `pg_sleep` so the ratio reflects overlap rather than fixed
+    per-acquire overhead. Ten reads across a pool of five is two waves, so the expected
+    ratio is ~0.2 — measured at 0.20-0.21 across repeated runs. Serialization would
+    drive it to 1.0, and a pool shrunk to one connection would too, which is precisely
+    the regression the original test claimed to catch.
+    """
+    pool_size = config.pools.readonly_max
+    # Long enough that the ratio reflects concurrency rather than per-acquire overhead,
+    # short enough that the whole test stays well under a second.
+    read_seconds = 0.02
+
+    async def read(i: int) -> None:
+        async with conn_manager.acquire_readonly() as conn:
+            await conn.fetchval(f"SELECT pg_sleep({read_seconds}), $1::int", i)
+
+    # A one-connection read pool cannot overlap anything, so the claim this test makes
+    # would be unfalsifiable rather than merely false.
+    assert pool_size >= 2, f"read pool of {pool_size} cannot serve concurrent reads"
+
+    await asyncio.gather(*[read(i) for i in range(10)])  # warm the pool to its ceiling
+
+    start = time.perf_counter()
+    for i in range(10):
+        await read(i)
+    sequential_ms = (time.perf_counter() - start) * 1000
+
+    start = time.perf_counter()
+    await asyncio.gather(*[read(i) for i in range(10)])
+    concurrent_ms = (time.perf_counter() - start) * 1000
+
+    ratio = concurrent_ms / sequential_ms
+    # Perfect overlap across `pool_size` connections gives ceil(10/pool_size)/10.
+    # Doubling that is generous headroom — but the result is then capped below 1.0,
+    # because a budget of 1.0 or more asserts nothing: serialization *is* a ratio of 1.0.
+    # Without the cap this test silently passed with the read pool shrunk to a single
+    # connection, which is the exact regression it claims to catch (pool_size=1 gives an
+    # "ideal" ratio of 1.0, and doubling it to 2.0 waves serialization straight through).
+    budget = min(2 * (-(-10 // pool_size) / 10), 0.8)
+    assert ratio < budget, (
+        f"10 concurrent pool reads took {concurrent_ms:.0f}ms vs {sequential_ms:.0f}ms "
+        f"sequential (ratio {ratio:.2f}, budget {budget:.2f}) — reads are not "
+        f"overlapping across the {pool_size}-connection read pool"
+    )
+
+    # The same batch over MCP, recorded but never gated: this number is dominated by the
+    # client's session multiplexing, so asserting on it would be asserting on FastMCP.
+    token = live_server.token("bench-concurrent", [Scope.READ.value])
+    async with Client(live_server.url, auth=token) as client:
+        await client.call_tool("query.read", {"sql": "SELECT 1 AS i"})  # warm up
         start = time.perf_counter()
         results = await asyncio.gather(
             *[client.call_tool("query.read", {"sql": f"SELECT {i} AS i"}) for i in range(10)]
         )
-        batch_ms = (time.perf_counter() - start) * 1000
+        mcp_batch_ms = (time.perf_counter() - start) * 1000
 
     assert len(results) == 10
     assert all(r.data["rows"][0]["i"] == i for i, r in enumerate(results))
-    # The MCP streamable-HTTP session multiplexes requests over one connection, so
-    # some serialization at the transport layer is expected. What this catches is a
-    # *server-side* regression: pool exhaustion or a global lock would push the batch
-    # toward 10x single-call latency. 8x leaves headroom for transport overhead while
-    # still failing loudly on real serialization.
-    assert batch_ms < single.p50 * 8, (
-        f"concurrent batch took {batch_ms:.0f}ms vs single p50 {single.p50:.0f}ms — "
-        "reads appear to be serializing"
+
+    print(
+        f"BENCH concurrent(10 reads)             pool_seq={sequential_ms:.0f}ms "
+        f"pool_concurrent={concurrent_ms:.0f}ms ratio={ratio:.2f} (budget {budget:.2f})  "
+        f"over_mcp={mcp_batch_ms:.0f}ms"
     )
-    print(f"BENCH concurrent(10 reads)             batch={batch_ms:.0f}ms")
     if _BENCH_OUT:
-        # The concurrency scenario measures one wall-clock number, not per-call
-        # samples, so it gets its own record shape rather than pretending otherwise.
+        # The concurrency scenario measures wall-clock numbers, not per-call samples,
+        # so it gets its own record shape rather than pretending otherwise.
         # Blocking file I/O is fine here: one tiny append after the timed section.
         with Path(_BENCH_OUT).open("a", encoding="utf-8") as f:  # noqa: ASYNC230
             f.write(
@@ -404,10 +470,12 @@ async def test_bench_concurrent_reads_no_serialization(
                     {
                         "ts": datetime.now(UTC).isoformat(),
                         "scenario": "concurrent(10 reads)",
-                        "batch_ms": round(batch_ms, 2),
-                        "single_p50_ms": round(single.p50, 2),
-                        "ratio": round(batch_ms / single.p50, 2) if single.p50 else None,
-                        "budget_ratio": 8.0,
+                        "pool_sequential_ms": round(sequential_ms, 2),
+                        "pool_concurrent_ms": round(concurrent_ms, 2),
+                        "ratio": round(ratio, 3),
+                        "budget_ratio": round(budget, 3),
+                        "pool_size": pool_size,
+                        "mcp_batch_ms": round(mcp_batch_ms, 2),
                     }
                 )
                 + "\n"
