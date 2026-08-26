@@ -5,6 +5,95 @@
 
 ---
 
+## 2026-08-26 · Phase 6f — distribution: an MCP server, not a Python library
+
+The scope decision that shaped this phase: **pgops-mcp is a server, not a library.**
+Nothing in `pgops.*` is meant to be imported, and it carries no API-stability promise.
+That distinction had been blurred in the packaging metadata and the docs, and blurring
+it costs something real — a `Topic :: Software Development :: Libraries :: Python
+Modules` classifier advertises an import surface that does not exist, and a README whose
+first instruction is `git clone` sends a *user* down a *contributor's* path.
+
+**Important nuance, because it is easy to get backwards:** "not a Python library" does
+not mean "not on PyPI". The MCP Registry hosts **metadata only** — it stores no
+artifacts. Every `server.json` must point at a package in a real package registry
+(PyPI / npm / NuGet / Cargo / OCI / MCPB), and `uvx pgops-mcp` — the standard install
+line every MCP client understands — *is* a PyPI fetch. So PyPI stays, as the delivery
+channel for an **application**; what got removed is the library framing around it.
+
+### Three genuine distribution bugs, found by installing it the way a stranger would
+
+Building the wheel and installing it into an empty virtualenv (rather than trusting the
+dev environment, where every dev extra is already present) surfaced all three:
+
+- **PHASE-6f · `docker` was never declared as a dependency.** `tools/environment.py`
+  imports it, and six of the seventeen tools (`env.*`, `container.*`) need it. It
+  reached the venv only as a transitive dependency of **testcontainers** — a *dev*
+  package. A user installing from PyPI would have had every environment tool fail with
+  `ImportError`. Worse, the error path said "install pgops-mcp with the docker extra"
+  and **no such extra existed**, so the one message meant to rescue the user pointed at
+  something imaginary. Now a hard runtime dependency: a half-working server is worse
+  than an honest one.
+- **PHASE-6f · `hypothesis[dev]` was a *runtime* dependency.** A property-testing
+  library shipped to every user of the server, via an extra (`[dev]`) that hypothesis
+  does not even publish — `uv` had been printing
+  `warning: The package hypothesis==6.165.10 does not have an extra named dev` on every
+  sync. Moved to the dev extra where it belongs.
+- **PHASE-6f · the README was mojibake.** Every em-dash in six documents was
+  double-encoded (`—` → `â€"`): the files had been read as cp1252 and written back as
+  UTF-8 at some point. This is not cosmetic *here* specifically, because **the README
+  becomes the PyPI project description** — it would have been the first thing anyone
+  saw. Repaired with a lossless round-trip check (re-corrupting the fix must reproduce
+  the original byte-for-byte) so text that was never damaged passes through untouched,
+  rather than a blind search-and-replace that could mangle legitimate content.
+
+### What shipped
+
+- **PHASE-6f · `server.json`** — the MCP Registry manifest, declaring **two** package
+  entries: `pypi` (with `runtimeHint: uvx`) and `oci`. Two, because they fail for
+  different people: `uvx` needs nothing preinstalled but assumes the host may run
+  Python; the container assumes only Docker. Every `PGOPS_*` variable is declared with
+  `isRequired` / `isSecret` / `default`, so a client can render a real configuration
+  form instead of making the user read the docs.
+- **PHASE-6f · `Dockerfile`**, two-stage so the runtime image carries no build backend
+  and no compiler. Non-root (uid 10001) by default. `VOLUME /var/lib/pgops` because
+  **an audit log that dies with the container is not an audit log** — declaring the
+  volume makes that explicit rather than leaving it to be discovered after an incident.
+  Carries `LABEL io.modelcontextprotocol.server.name`, which is how the registry
+  verifies OCI ownership.
+- **PHASE-6f · registry ownership markers.** PyPI ownership is proven by an
+  `mcp-name: io.github.arzharch/pgops-mcp` marker in the README (which becomes the PyPI
+  description); OCI ownership by the image label above. Both are asserted in CI, because
+  losing the marker during an ordinary docs edit would break publishing in a way that is
+  baffling after the fact.
+- **PHASE-6f · `publish.yml`**, tag-gated. Job order is load-bearing, not tidy:
+  `verify → (pypi, container) → registry`. The registry validates that the artifact it
+  points at already exists and is provably ours, so publishing metadata first simply
+  fails. PyPI upload uses **Trusted Publishing** (OIDC), so no long-lived API token has
+  to exist as a repository secret at all. The verify job cross-checks the version in
+  `pyproject.toml`, `pgops.__version__`, `server.json` *and* its `packages[]` entry
+  against the tag — caught before PyPI accepts an immutable version number, not halfway
+  through a release.
+- **PHASE-6f · `CONTRIBUTING.md`**, so `git clone` + `uv sync` lives where contributors
+  look and no longer greets users on the front page.
+
+### Gate evidence
+
+- Clean-room install from the built wheel into an empty venv: `pgops-mcp --selfcheck`
+  connected to the 1.2M-row dev database and listed all 4 tables. Asserted that
+  `hypothesis`, `pytest` and `testcontainers` are **absent** from that environment.
+- Container: builds, runs `--selfcheck` successfully against the host database via
+  `host.docker.internal`, `id` confirms uid=10001 (non-root), and
+  `docker inspect` shows the `io.modelcontextprotocol.server.name` label.
+- 436 tests pass; ruff and mypy clean.
+- Release preconditions validated locally: all four version strings agree, README marker
+  present, `server.json` name matches. Both workflow files parse as YAML — which caught
+  a real break: an unquoted `mcp-name: ...` inside a `run:` value is invalid YAML
+  (`mapping values are not allowed here`), so the publish workflow would have failed on
+  its first run.
+
+---
+
 ## 2026-08-25 · Phase 6d — observability: traces, metrics, health
 
 The difference between "has an audit log" and "is observable". The audit log answers
@@ -747,28 +836,39 @@ uv run pytest -q      # 1 passed
 
 ## Next up
 
-- [ ] Phase 6c: packaging & distribution — PyPI, Smithery manifest, official MCP registry,
-      README quickstart verified on a clean machine, demo recording
-- [ ] **Per-session DSN isolation for HTTP.** Auth identifies the caller, but every
-      authenticated caller currently shares one `ConnectionManager` and one audit log.
-      That is correct for stdio (one user, one database) and insufficient for a
-      genuinely multi-tenant deployment. Scoped tokens limit *what* a caller can do,
-      not *which database* they reach.
-- [ ] **Audit log should record the token subject.** The identity exists in the JWT but
-      is not yet threaded into `AuditEntry`, so on HTTP the log answers "what happened"
-      but not "who did it" — the whole reason `subject` is in the token.
-- [ ] **Sampling** (`ctx.sample`) — unused so far. Real candidates: summarising an
-      EXPLAIN plan in prose, or turning a natural-language request into a
-      `migration.plan` target, both without pgops needing its own model or API key.
-- [ ] **Completions** — argument autocomplete for table names would remove a whole class
-      of "table not found" round trips.
-- [ ] `migration.rollback` — the ledger stores the applied steps, but generated
-      down-migrations are not implemented yet. Deliberately deferred rather than
-      half-built: a rollback that silently loses data is worse than none, so it needs
-      the honest-refusal path (PRD FR-3) done properly.
-- [ ] Known gap to close: classifier can't see writes inside volatile functions
-      (`SELECT my_func()`); needs a `pg_proc.provolatile` catalog lookup. Currently
-      caught only by the read-only pool at execution time (ADR-001).
-- [ ] `index.advise` names the table taking sequential scans but not the *column* to
-      index — that needs plan inspection per statement. Currently honest about it
-      ("run query.explain on this statement") rather than fabricating a CREATE INDEX.
+Everything the previous "Next up" listed has shipped — sampling, completions,
+`migration.rollback`, the audit-log subject, the volatile-function classifier gap, and
+packaging. What remains is listed honestly rather than quietly dropped.
+
+### Blocking a first release
+
+- [ ] **Publish.** The pipeline is written and its preconditions verified locally, but
+      nothing has been pushed yet. Requires, in order: a PyPI project with Trusted
+      Publishing configured for this repo, a `release` GitHub environment, then a `v*`
+      tag. The MCP Registry entry is the last step and is automatic.
+- [ ] **Verify on a machine that is not this one.** The clean-room test proves the wheel
+      installs into an empty venv on *this* Windows host. Linux and macOS are covered by
+      CI running the suite, not by anyone actually installing the published artifact.
+
+### Known limits, deliberately not built
+
+- [ ] **Per-session DSN isolation for HTTP.** Auth identifies the caller and scopes
+      limit *what* they may do, but every authenticated caller still shares one
+      `ConnectionManager`, one audit log and one in-memory plan/token store. Correct for
+      the intended shape (one engineer, one or a few databases); insufficient for
+      multi-tenant SaaS. Documented as a non-goal in SETUP.md rather than half-built.
+- [ ] **`index.advise` names the table taking sequential scans, not the column** to
+      index — that needs per-statement plan inspection. It currently says so ("run
+      `query.explain` on this statement") instead of fabricating a `CREATE INDEX`.
+- [ ] **`DROP INDEX` / `DROP CONSTRAINT` are irreversible in `migration.rollback`**,
+      because the object's definition is not captured before the drop. Recoverable in
+      principle: record `pg_get_indexdef` / `pg_get_constraintdef` at plan time. Until
+      then the rollback refuses and says why, rather than reconstructing a `CREATE`
+      statement from assumptions.
+
+### Worth doing, not urgent
+
+- [ ] **Smithery listing** — a second marketplace, separate manifest format from
+      `server.json`.
+- [ ] **Demo recording.** The lock-analysis output on a 1.2M-row table is the single
+      most convincing artifact this project has and it currently only exists as text.

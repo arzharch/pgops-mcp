@@ -1014,3 +1014,459 @@ reason is worse than no test.
 
 The reason I didn't just loosen the assertion: a test that false-alarms gets weakened or
 deleted by whoever hits it next, and that's how the real guarantee gets lost.
+
+---
+
+## Section 6b: Observability — traces, metrics, health
+
+### Q: You have an audit log. Why add OpenTelemetry?
+
+They answer different questions and neither substitutes for the other:
+
+- The **audit log** is forensic: *who did what, approved by whom, and was it refused.*
+  Append-only, on disk, survives the database being broken. You read it after an
+  incident.
+- **Telemetry** is operational: *how slow, how often, how healthy.* You watch it to
+  notice the incident.
+
+"Production-grade" is not an honest claim with only the first one.
+
+### Q: What was the design constraint?
+
+**Telemetry must never break the operation it describes.** A monitoring layer that can
+fail the request it monitors is worse than no monitoring — you have added a failure mode
+in exchange for a graph.
+
+Concretely: with `PGOPS_OTEL_ENDPOINT` unset, every call in `observability.py` is a
+no-op. That is asserted by a test, not left to intention. The otel/aiohttp dependencies
+are an optional extra (`uv sync --extra otel`); the module imports them lazily and
+degrades with a warning if they are absent.
+
+### Q: Spans per tool, or one place?
+
+**One place — `tool_boundary`.** That decorator already wraps every tool, so all
+seventeen are instrumented by construction rather than by remembering to add a decorator
+each time someone adds a tool. The same argument as putting scope enforcement in
+middleware: a cross-cutting rule enforced per-call-site is a rule that will be missed.
+
+Spans carry what an incident responder actually needs: tool, classification, verdict
+(`executed` / `refused` / `failed`), error code, duration.
+
+**Refusals are spans too**, which is the non-obvious part. A spike in
+`CONFIRMATION_REQUIRED` is itself an operational signal — an agent repeatedly trying
+something it should not. If you only trace successes, the most interesting event in the
+system is invisible.
+
+### Q: Which metrics, and why those?
+
+Four, chosen for the failure modes this particular service has:
+
+| Metric | Why this one |
+|---|---|
+| `pgops.tool.calls` (counter, by tool + verdict) | traffic *and* refusal rate in one series |
+| `pgops.tool.duration` (histogram, by tool) | p99 for SLOs; an average would hide the tail that matters |
+| `pgops.pool.acquisitions` + timeouts | pool saturation — the failure this design can actually hit, since the pools are deliberately small |
+| `pgops.db.up` (gauge) | last known reachability of Postgres |
+
+Metrics are recorded even when no span exists: they are the cheaper signal and the one
+dashboards are built on. Tracing every call and exporting it is the expensive path.
+
+### Q: Why separate `/health` and `/ready`?
+
+Because they mean different things to a process manager, and conflating them causes
+restart loops:
+
+- `/health` — **liveness**: the process is up. If this fails, restart me.
+- `/ready` — **readiness**: I can actually reach Postgres right now. If this fails,
+  stop sending me traffic, but **do not restart me** — the database being down is not
+  fixed by bouncing this process.
+
+They exist so a load balancer or a compose healthcheck has something standard to poll
+instead of scraping logs.
+
+---
+
+## Section 6c: The red-team suite — proving it resists misuse
+
+### Q: You had tests. Why write an adversarial suite on top?
+
+Because of a distinction I had been glossing over: **the eval suite proves the server
+works; it does not prove the server resists.** Every safety mechanism here was designed
+against an adversary, but until this suite existed, all of it was only ever tested
+against *cooperative* callers following the documented flow.
+
+That is a real gap. A guardrail is a claim about what happens when someone does not
+cooperate, and a test where everyone cooperates cannot evaluate that claim.
+
+Fifteen named attacks, each referencing the mechanism that should stop it, run against
+the real HTTP server with real auth.
+
+### Q: What do the attacks cover?
+
+Six categories, chosen by asking "what would a compromised agent actually try?":
+
+1. **Data exfiltration through the read path** — `pg_read_file`, `pg_ls_dir`,
+   `COPY TO PROGRAM`. These are `SELECT`s. A classifier that only asks "is this a
+   SELECT" waves all three through, and they read the host filesystem.
+2. **Token laundering** — a confirmation token issued for one statement used to execute
+   a different one; a token replayed twice.
+3. **Scope escalation** — case tricks (`QUERY.WRITE`), whitespace tricks, invoking a
+   tool that is not in `TOOL_SCOPES` at all.
+4. **Write-hiding in lexically innocent SQL** — CTE-wrapped DML
+   (`WITH x AS (INSERT ...) SELECT`), volatile functions, `SELECT ... FOR UPDATE`,
+   sequence advancement via `nextval()`.
+5. **Audit/resource tampering** — writing directly to the `pgops_migrations` ledger.
+6. **Multi-statement injection shapes.**
+
+### Q: What does each test assert?
+
+Two things, wherever possible: the attack is **refused**, *and* the attempt is
+**audited**.
+
+That second half is the part people skip. A refusal without a record is its own failure
+mode — "something blocked the attack but nobody will ever know it happened" means you
+cannot detect a campaign of attempts, only the one that eventually succeeds. There is a
+dedicated test asserting that *every* refusal leaves an audit record.
+
+### Q: Did it find anything?
+
+Yes — and that is the argument for writing it. The scope-escalation category found that
+`TOOL_SCOPES` was **documentation, not enforcement**: `JWTVerifier(required_scopes=...)`
+checks scopes once per request against a single server-wide list, so a token issued with
+`pgops:read` alone cleared the only gate that existed. A read-only token ran
+`CREATE TABLE` successfully. The fix was per-tool enforcement in middleware; the lesson
+generalises — **authentication answered "is this caller real", and nothing answered "is
+this caller allowed to do *this*".**
+
+### Q: And the property-based tests?
+
+Hypothesis, aimed at the safety core (`test_properties.py`). Example-based tests check
+the cases I thought of; property-based tests attack the invariant itself — *"no
+generated statement is ever classified as read when it contains write DML"* — over
+inputs I did not think of. The two are complementary: examples document intent,
+properties find the gap between intent and implementation.
+
+---
+
+## Section 6d: Audit replay — the log as an executable record
+
+### Q: What is `pgops-mcp replay`?
+
+The audit log already contains everything needed to reconstruct a session: tool, SQL,
+verdict, actor, timestamp. Until this existed, it answered "what happened" only by a
+human reading JSONL. Replay makes it executable.
+
+```bash
+pgops-mcp replay ~/.pgops/audit.jsonl --dry-run
+```
+
+Two modes, and the default is the safe one:
+
+- **`--dry-run` (default)** re-classifies every executed statement against *today's*
+  classifier and guardrails, and reports whether the current code would reach the same
+  verdict. This is a **regression detector for the safety core**: if an old session's
+  writes would now be classified differently, either those statements were ambiguous or
+  the rules changed. Both are worth knowing, and neither is visible from reading the log.
+- **`--execute`** actually re-runs the executed statements in order — useful for
+  fast-forwarding a dev database restored from backup. Gated behind a flag **and** a
+  typed confirmation, because replaying writes is itself a destructive operation.
+
+### Q: What are the interesting design decisions?
+
+Four, all of them about what *not* to replay:
+
+- **Only `verdict == "executed"` entries replay.** Refusals are history, not
+  instructions. Re-running a refused statement would defeat the guardrail that refused
+  it the first time — the log would become an attack vector.
+- **Entries produced by a previous replay are skipped** (`tool == "replay"`). Replaying
+  a live audit file must not compound its own output into the timeline.
+- **A failed statement stops the replay** and reports exactly where. Partial replay is
+  safer than skipping errors, because skipped writes produce a database state matching
+  *no point* in the original timeline — worse than stopping early.
+- **Replayed entries record the original actor prefixed `replay:`**, so a replayed
+  session is distinguishable from live traffic in any later incident review. If you
+  cannot tell reconstructed history from real history, you have corrupted the record you
+  were trying to preserve.
+
+### Q: Is it idempotent?
+
+**No, and it does not pretend to be.** Replaying an `INSERT` twice duplicates rows.
+That is inherent to replaying a log of arbitrary SQL, and it is exactly why `--execute`
+demands explicit confirmation rather than being the default. Same instinct as
+`migration.rollback` refusing an irreversible step: the honest refusal is worth more
+than a convenient lie.
+
+---
+
+## Section 7: Distribution — shipping it as an MCP server
+
+This section covers the packaging phase. It is worth rehearsing because it is where
+"works on my machine" and "works in an unfamiliar environment" actually diverge, and
+because every bug in it was found by *installing the thing*, not by reading the code.
+
+### Q: Is pgops-mcp a Python library?
+
+**No, and the distinction changes the packaging.** It is an MCP *server* — a program a
+client spawns and talks to over a protocol. Nothing in `pgops.*` is meant to be
+imported by anyone else's code, and it carries no API-stability promise.
+
+That had leaked into the metadata:
+
+```toml
+# before — advertises an import surface that does not exist
+classifiers = [
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+
+# after — it is an application you run
+classifiers = [
+    "Environment :: Console",
+    "Intended Audience :: System Administrators",
+    "Topic :: Database :: Database Engines/Servers",
+    "Topic :: System :: Systems Administration",
+]
+```
+
+And into the docs: the README's first instruction was `git clone && uv sync`, which is a
+*contributor's* path being handed to a *user*. Now the README opens with the client
+config block, and the checkout instructions live in `CONTRIBUTING.md`.
+
+### Q: If it's not a library, why is it on PyPI at all?
+
+**This is the trap in the question, and the answer is the interesting part.** "Not a
+library" does not mean "not on PyPI". PyPI here is a *delivery channel for an
+application*, exactly like Homebrew ships CLIs it does not expect you to `#include`.
+
+Two concrete reasons it has to stay:
+
+1. `uvx pgops-mcp` — the install line every MCP client understands — **is** a PyPI
+   fetch. Removing PyPI removes the standard install path.
+2. **The MCP Registry hosts metadata only.** It stores no artifacts. Every `server.json`
+   must point at a package in a real registry — PyPI, npm, NuGet, Cargo, OCI or MCPB —
+   and the registry *validates that the package exists* before accepting the entry.
+
+So the fix was to remove the library *framing*, not the package.
+
+### Q: Walk me through the distribution bugs you found.
+
+All three came from one decision: **build the wheel and install it into an empty
+virtualenv**, rather than trusting the dev environment where every extra is already
+present.
+
+**1. `docker` was never declared as a dependency.**
+
+```python
+# src/pgops/tools/environment.py
+def _docker_module() -> Any:
+    try:
+        import docker
+    except ImportError as exc:  # pragma: no cover - dependency is declared
+        raise PgopsError(
+            ErrorCode.DOCKER_UNAVAILABLE,
+            "the docker package is not installed",
+            hint="install pgops-mcp with the docker extra",   # <- no such extra existed
+        ) from exc
+```
+
+Six of seventeen tools (`env.*`, `container.*`) need it. It was in my venv only as a
+transitive dependency of **testcontainers** — a *dev* package. A user installing from
+PyPI would have had every environment tool fail. And the rescue message pointed at a
+`docker` extra that **did not exist**, so the one path meant to save the user was a dead
+end. Proof it was transitive:
+
+```
+$ uv pip show docker
+Required-by: testcontainers
+```
+
+I made it a hard runtime dependency rather than an optional extra. The reasoning: a
+third of the tool surface is not "optional", and a server that silently offers tools it
+cannot run is worse than one that is honest about its dependencies.
+
+**2. A test-only library was a runtime dependency.**
+
+```toml
+dependencies = [
+    "fastmcp>=2.3",
+    "asyncpg>=0.29",
+    "sqlparse>=0.5",
+    "hypothesis[dev]>=6.165.10",   # property-testing lib, shipped to every user
+]
+```
+
+`uv` had been telling me for a while and I had not read it:
+`warning: The package hypothesis==6.165.10 does not have an extra named dev`. The extra
+was invented. Moved to the dev extra.
+
+**3. The README was mojibake — and the README becomes the PyPI front page.**
+
+Every em-dash across six documents was double-encoded: the files had been read as cp1252
+and written back as UTF-8, so `—` had become `â€"`. The repair is the part worth
+describing, because a blind search-and-replace could corrupt legitimate text:
+
+```python
+def unmojibake(text: str) -> str:
+    """Reverse one round of 'read as cp1252, written as utf-8'."""
+    out = []
+    for line in text.split("\n"):
+        try:
+            fixed = line.encode("cp1252").decode("utf-8")
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            out.append(line); continue
+        # Re-corrupting the fix must reproduce the original, or we are guessing.
+        if fixed.encode("utf-8").decode("cp1252") == line:
+            out.append(fixed)
+        else:
+            out.append(line)
+    return "\n".join(out)
+```
+
+The round-trip check means undamaged text passes through untouched. It left six
+stragglers — lines mixing an em-dash with an emoji whose bytes are not representable in
+cp1252 — which I fixed by explicit sequence replacement rather than by loosening the
+check. Same principle as the secret-leak test: do not weaken the assertion to make it
+pass.
+
+### Q: Why two package entries in `server.json`?
+
+Because they fail for different people:
+
+```json
+"packages": [
+  { "registryType": "pypi", "identifier": "pgops-mcp", "runtimeHint": "uvx", ... },
+  { "registryType": "oci",  "identifier": "ghcr.io/arzharch/pgops-mcp:0.1.1", ... }
+]
+```
+
+`uvx` needs nothing preinstalled but assumes the host will run Python. The container
+assumes only Docker — which is the right answer for someone who does not want a Python
+toolchain on the machine that holds a production DSN.
+
+Every `PGOPS_*` variable is declared with `isRequired` / `isSecret` / `default`, so a
+client can render a real configuration form instead of making the user read the docs:
+
+```json
+{ "name": "PGOPS_DSN", "description": "...", "isRequired": true, "isSecret": true }
+```
+
+### Q: How does the registry know you own the package?
+
+Per package type, and it is worth knowing because it is easy to break by accident:
+
+- **PyPI** — an `mcp-name: io.github.arzharch/pgops-mcp` string in the README, which
+  becomes the PyPI description. May be inside an HTML comment.
+- **OCI** — a `LABEL io.modelcontextprotocol.server.name` in the image.
+
+Both are asserted in CI, because losing the marker during an ordinary docs edit would
+break publishing in a way that is baffling after the fact:
+
+```yaml
+- name: README must carry the registry ownership marker
+  run: |
+    grep -q 'mcp-name: io.github.arzharch/pgops-mcp' README.md
+```
+
+### Q: Why is the publish workflow ordered the way it is?
+
+```
+verify → (pypi, container) → registry
+```
+
+Not tidiness — **the registry validates that the artifact already exists**. Publishing
+metadata before the package fails validation. The `verify` job also cross-checks four
+version strings against the git tag:
+
+```bash
+TAG="${GITHUB_REF_NAME#v}"
+# pyproject.toml, pgops.__version__, server.json.version, server.json.packages[pypi].version
+test "$TAG" = "$PY" && test "$TAG" = "$PKG" && test "$TAG" = "$SRV" && test "$TAG" = "$SRVPKG"
+```
+
+A version that disagrees with itself gets caught *before* PyPI accepts an immutable
+version number, not halfway through a release when the fix requires burning a version.
+
+PyPI upload uses **Trusted Publishing** (OIDC): PyPI mints a short-lived token scoped to
+this workflow, so no long-lived API token has to exist as a repository secret at all.
+Same asymmetric-credentials instinct as the RS256 choice for agent tokens — the server
+holds only the public key, the CI holds no token.
+
+### Q: What decisions did you make in the Dockerfile, and why?
+
+```dockerfile
+FROM python:3.12-slim AS build
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+RUN uv build --wheel --out-dir /wheels \
+ && uv venv /opt/venv \
+ && VIRTUAL_ENV=/opt/venv uv pip install --no-cache /wheels/*.whl
+
+FROM python:3.12-slim AS runtime
+LABEL io.modelcontextprotocol.server.name="io.github.arzharch/pgops-mcp"
+COPY --from=build /opt/venv /opt/venv
+RUN useradd --create-home --uid 10001 pgops && mkdir -p /var/lib/pgops \
+ && chown -R pgops:pgops /var/lib/pgops
+USER pgops
+ENV PGOPS_AUDIT_LOG=/var/lib/pgops/audit.jsonl
+VOLUME ["/var/lib/pgops"]
+ENTRYPOINT ["pgops-mcp"]
+```
+
+- **Two stages** so the runtime image carries no build backend and no compiler.
+- **Non-root by default.** The server needs no privileges of its own — it holds a DSN,
+  and the `env.*` tools reach Docker through a socket that must be mounted
+  deliberately. Running as root would only widen what a compromise reaches.
+- **`VOLUME /var/lib/pgops`** — an audit log that dies with the container is not an
+  audit log. Declaring the volume makes that explicit rather than leaving it to be
+  discovered *after* an incident.
+- **No `EXPOSE`.** stdio is the default and needs no port; HTTP is opt-in and refuses to
+  start without a public key. Exposing a port by default would contradict that.
+
+### Q: How do you know any of this works?
+
+Not by reading it — by running it in the environment a stranger would have:
+
+```
+$ uv venv /tmp/clean && uv pip install --python /tmp/clean dist/pgops_mcp-0.1.1-py3-none-any.whl
+$ PGOPS_DSN=... /tmp/clean/Scripts/pgops-mcp --selfcheck
+readonly pool: OK
+tables in public schema: 4
+  - orders: ~1200000 rows, 119717888 bytes
+$ /tmp/clean/Scripts/python -c "import importlib.util as u; print(u.find_spec('hypothesis'))"
+None                       # test libs absent, as intended
+```
+
+```
+$ docker run --rm --add-host=host.docker.internal:host-gateway \
+    -e PGOPS_DSN=... pgops-mcp:test --selfcheck
+readonly pool: OK
+$ docker run --rm --entrypoint id pgops-mcp:test
+uid=10001(pgops) gid=10001(pgops)
+```
+
+Plus 436 tests, ruff and mypy clean. And validating both workflow files as YAML caught a
+real break before it ever ran: an unquoted `mcp-name: ...` inside a `run:` value is
+invalid YAML — `mapping values are not allowed here` — so the publish workflow would
+have failed on its first execution, at the worst possible moment.
+
+### Q: What is *not* ready?
+
+Worth saying plainly, because the honest version is more credible than a claim of done:
+
+- Nothing has actually been **published** yet. The pipeline is written and its
+  preconditions verified locally; it needs a PyPI project with Trusted Publishing
+  configured, a `release` GitHub environment, and a `v*` tag.
+- The clean-room install is verified on **one** machine (Windows). Linux and macOS are
+  covered by CI running the test suite, not by anyone installing the published artifact.
+- **Per-session DSN isolation** is still absent: auth identifies *who* and scopes limit
+  *what*, but every authenticated caller shares one `ConnectionManager` and one audit
+  log. Correct for the intended shape — one engineer, one or a few databases —
+  insufficient for multi-tenant SaaS. Documented as a non-goal rather than half-built.
+
+### Tweaks for different settings
+
+| Setting | Change |
+|---|---|
+| Locked-down corporate host, no Python | Use the OCI entry; `docker run -i --rm` with the audit volume mounted |
+| Air-gapped | `uv pip download` the wheel + deps, or `docker save` the image; no registry reachable at runtime |
+| Team sharing one server over HTTP | Mount the audit volume on durable storage — it is the only record of who did what |
+| Publishing a fork | Change the `name` in `server.json`, the README `mcp-name:` marker, **and** the Dockerfile `LABEL` — all three, or ownership verification fails |
+| Adding a package registry (npm, Cargo) | Add a `packages[]` entry with that registry's own ownership marker; they are not interchangeable |
