@@ -31,6 +31,7 @@ from typing import Any
 
 import pytest
 import pytest_asyncio
+from conftest import free_port
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
 
@@ -57,11 +58,10 @@ async def redteam_server(conn_manager: Any, config: Any) -> AsyncIterator[Server
     task = None
     import asyncio
 
-    task = asyncio.create_task(
-        server.run_async(transport="http", host="127.0.0.1", port=8796)
-    )
+    port = free_port()
+    task = asyncio.create_task(server.run_async(transport="http", host="127.0.0.1", port=port))
     await asyncio.sleep(4)
-    yield Server(url="http://127.0.0.1:8796/mcp/", pair=pair)
+    yield Server(url=f"http://127.0.0.1:{port}/mcp/", pair=pair)
     task.cancel()
     try:
         await task
@@ -116,9 +116,7 @@ async def test_file_read_via_pg_read_file_is_refused(redteam_server: Server) -> 
 async def test_directory_listing_via_pg_ls_dir_is_refused(redteam_server: Server) -> None:
     tok = redteam_server.token("attacker", [Scope.READ.value])
     async with Client(redteam_server.url, auth=tok) as client:
-        result = await client.call_tool(
-            "query.read", {"sql": "SELECT * FROM pg_ls_dir('/etc')"}
-        )
+        result = await client.call_tool("query.read", {"sql": "SELECT * FROM pg_ls_dir('/etc')"})
         assert _error_code(result) == "CLASSIFICATION_REFUSED"
 
 
@@ -178,14 +176,10 @@ async def test_replayed_token_cannot_execute_twice(redteam_server: Server) -> No
         r1 = await client.call_tool("query.write", {"sql": refuse_sql})
         token = r1.structured_content["error"]["hint"].split("confirm_token='")[1].split("'")[0]
 
-        ok = await client.call_tool(
-            "query.write", {"sql": refuse_sql, "confirm_token": token}
-        )
+        ok = await client.call_tool("query.write", {"sql": refuse_sql, "confirm_token": token})
         assert ok.data["rows_affected"] == 250
 
-        replay = await client.call_tool(
-            "query.write", {"sql": refuse_sql, "confirm_token": token}
-        )
+        replay = await client.call_tool("query.write", {"sql": refuse_sql, "confirm_token": token})
         assert _error_code(replay) == "INVALID_CONFIRMATION"
 
 
@@ -298,20 +292,14 @@ async def test_select_for_update_refused_on_read_path(redteam_server: Server) ->
         # both are acceptable refusals; silent success is not
         code = _error_code(result)
         msg = (result.structured_content or {}).get("error", {}).get("message", "")
-        assert (
-            code == "CLASSIFICATION_REFUSED"
-            or "read-only" in msg.lower()
-            or "FOR UPDATE" in msg
-        )
+        assert code == "CLASSIFICATION_REFUSED" or "read-only" in msg.lower() or "FOR UPDATE" in msg
 
 
 async def test_sequence_advancement_refused_on_read_path(redteam_server: Server) -> None:
     """nextval() consumes sequence state that no rollback restores."""
     tok = redteam_server.token("seq-eater", [Scope.READ.value])
     async with Client(redteam_server.url, auth=tok) as client:
-        result = await client.call_tool(
-            "query.read", {"sql": "SELECT nextval('items_id_seq')"}
-        )
+        result = await client.call_tool("query.read", {"sql": "SELECT nextval('items_id_seq')"})
         code = _error_code(result)
         msg = (result.structured_content or {}).get("error", {}).get("message", "")
         assert code == "CLASSIFICATION_REFUSED" or "read-only" in msg.lower()
@@ -327,9 +315,7 @@ async def test_direct_write_to_ledger_table_requires_confirmation(
     the same guardrails as any other unbounded mutation."""
     tok = redteam_server.token("history-eraser", [Scope.READ.value, Scope.WRITE.value])
     async with Client(redteam_server.url, auth=tok) as client:
-        result = await client.call_tool(
-            "query.write", {"sql": "TRUNCATE pgops_migrations"}
-        )
+        result = await client.call_tool("query.write", {"sql": "TRUNCATE pgops_migrations"})
         # TRUNCATE is destructive class -> confirmation required, never auto-executed
         assert _error_code(result) == "CONFIRMATION_REQUIRED"
 
@@ -338,18 +324,14 @@ async def test_multi_statement_smuggling_rejected(redteam_server: Server) -> Non
     """`SELECT 1; DROP TABLE items` — stacked-query injection shape, rejected outright."""
     tok = redteam_server.token("stacker", [Scope.READ.value])
     async with Client(redteam_server.url, auth=tok) as client:
-        result = await client.call_tool(
-            "query.read", {"sql": "SELECT 1; DROP TABLE items"}
-        )
+        result = await client.call_tool("query.read", {"sql": "SELECT 1; DROP TABLE items"})
         assert _error_code(result) == "CLASSIFICATION_REFUSED"
 
 
 # --- 6. refusals are audited ---------------------------------------------------------------
 
 
-async def test_every_refusal_leaves_an_audit_record(
-    redteam_server: Server, config: Any
-) -> None:
+async def test_every_refusal_leaves_an_audit_record(redteam_server: Server, config: Any) -> None:
     """The incident-review guarantee: attacks leave evidence. Run three distinct
     attacks through query.write (whose refusals are audited by design), then assert
     each appears in the audit log with a non-executed verdict."""

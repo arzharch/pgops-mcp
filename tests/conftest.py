@@ -22,7 +22,9 @@ from pgops.guardrails import ConfirmationTokenStore
 
 @pytest.fixture(scope="session")
 def postgres_container() -> Iterator[PostgresContainer]:
-    with PostgresContainer("postgres:16", username="pgops_test", password="pgops_test", dbname="pgops_test") as container:
+    with PostgresContainer(
+        "postgres:16", username="pgops_test", password="pgops_test", dbname="pgops_test"
+    ) as container:
         yield container
 
 
@@ -146,3 +148,28 @@ async def perf_dsn(dsn: str) -> str:
     finally:
         await conn.close()
     return dsn
+
+
+def free_port() -> int:
+    """Reserve an unused TCP port for a test that boots a real HTTP server.
+
+    Fixed port numbers were used here originally, and they caused exactly the failure
+    they always cause: two suites (`test_live_server` and `test_audit_identity`) both
+    picked 8795, so running the full suite meant one of them either failed to bind or —
+    worse — connected to the *other* suite's server and made assertions about it. The
+    symptom was a cascade of unrelated errors in whichever suite ran second, and it
+    passed in isolation, which is the signature of a shared-resource collision rather
+    than a real defect.
+
+    Function-scoped fixtures make it worse: a suite that boots a server per test rebinds
+    the same port fifteen times in a row, which on Windows can land in TIME_WAIT.
+
+    Binding port 0 lets the OS pick something free. There is a small race between
+    closing this socket and uvicorn binding it, but it is far narrower than the
+    certainty of collision with hardcoded numbers.
+    """
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])

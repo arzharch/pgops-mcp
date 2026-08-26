@@ -10,6 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from conftest import free_port
 
 from pgops.__main__ import parse_args
 from pgops.auth import (
@@ -166,10 +167,8 @@ async def test_http_transport_rejects_unauthenticated_and_accepts_valid_tokens(
 
     pair = generate_keypair()
     server = build_server(config, conn_manager, auth=build_verifier(pair.public_key))  # type: ignore[arg-type]
-    port = 8791
-    task = asyncio.create_task(
-        server.run_async(transport="http", host="127.0.0.1", port=port)
-    )
+    port = free_port()
+    task = asyncio.create_task(server.run_async(transport="http", host="127.0.0.1", port=port))
     await asyncio.sleep(4)
     url = f"http://127.0.0.1:{port}/mcp/"
 

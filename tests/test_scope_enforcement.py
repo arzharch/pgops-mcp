@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from conftest import free_port
 
 from pgops.auth import TOOL_SCOPES, Scope, build_verifier, generate_keypair, issue_token
 from pgops.middleware import LOCAL_CALLER, Caller, current_caller
@@ -75,7 +76,7 @@ async def test_scopes_are_enforced_over_http(conn_manager: object, config: objec
 
     pair = generate_keypair()
     server = build_server(config, conn_manager, auth=build_verifier(pair.public_key))  # type: ignore[arg-type]
-    port = 8793
+    port = free_port()
     task = asyncio.create_task(server.run_async(transport="http", host="127.0.0.1", port=port))
     await asyncio.sleep(4)
     url = f"http://127.0.0.1:{port}/mcp/"

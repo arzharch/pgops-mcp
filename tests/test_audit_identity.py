@@ -12,6 +12,7 @@ import asyncio
 from pathlib import Path
 
 import pytest
+from conftest import free_port
 
 from pgops.audit import UNKNOWN_ACTOR, AuditEntry, AuditLog
 from pgops.auth import Scope, build_verifier, generate_keypair, issue_token
@@ -92,7 +93,7 @@ async def test_http_calls_record_the_token_subject(conn_manager: object, config:
 
     pair = generate_keypair()
     server = build_server(config, conn_manager, auth=build_verifier(pair.public_key))  # type: ignore[arg-type]
-    port = 8795
+    port = free_port()
     task = asyncio.create_task(server.run_async(transport="http", host="127.0.0.1", port=port))
     await asyncio.sleep(4)
     url = f"http://127.0.0.1:{port}/mcp/"

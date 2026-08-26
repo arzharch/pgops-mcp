@@ -33,6 +33,7 @@ from typing import Any
 
 import pytest
 import pytest_asyncio
+from conftest import free_port
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
 
@@ -95,10 +96,8 @@ async def live_server(conn_manager: Any, config: Any) -> AsyncIterator[LiveServe
 
     pair = generate_keypair()
     server = build_server(config, conn_manager, auth=build_verifier(pair.public_key))
-    port = 8795
-    task = asyncio.create_task(
-        server.run_async(transport="http", host="127.0.0.1", port=port)
-    )
+    port = free_port()
+    task = asyncio.create_task(server.run_async(transport="http", host="127.0.0.1", port=port))
     await asyncio.sleep(4)  # uvicorn startup; same settle time as test_scope_enforcement
     yield LiveServer(url=f"http://127.0.0.1:{port}/mcp/", pair=pair, task=task)
     task.cancel()
@@ -183,9 +182,7 @@ async def test_all_tools_answer_over_authenticated_http(
         table_names = [t["name"] for t in schema.data["tables"]]
         assert "items" in table_names
 
-        read = await client.call_tool(
-            "query.read", {"sql": "SELECT count(*) AS n FROM items"}
-        )
+        read = await client.call_tool("query.read", {"sql": "SELECT count(*) AS n FROM items"})
         assert read.data["rows"][0]["n"] == 250
 
         # plain EXPLAIN is a read; the JSON variant belongs to query.explain
@@ -276,9 +273,7 @@ async def test_safety_guarantees_survive_the_network_hop(
             },
         )
         assert mismatch.structured_content is not None
-        assert (
-            mismatch.structured_content["error"]["code"] == "CONFIRMATION_MISMATCH"
-        )
+        assert mismatch.structured_content["error"]["code"] == "CONFIRMATION_MISMATCH"
 
         # 3. right statement + right token -> executes, exactly once
         result = await client.call_tool(
@@ -383,10 +378,7 @@ async def test_bench_concurrent_reads_no_serialization(
 
         start = time.perf_counter()
         results = await asyncio.gather(
-            *[
-                client.call_tool("query.read", {"sql": f"SELECT {i} AS i"})
-                for i in range(10)
-            ]
+            *[client.call_tool("query.read", {"sql": f"SELECT {i} AS i"}) for i in range(10)]
         )
         batch_ms = (time.perf_counter() - start) * 1000
 
