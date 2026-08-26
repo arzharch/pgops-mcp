@@ -31,6 +31,24 @@ some transport-level serialization is expected; server-side serialization is not
 - n=20 samples per scenario, percentiles computed exactly (not estimated)
 - Numbers vary by machine; the budgets are what's portable, not the milliseconds
 
+## Benchmark evidence as artifacts
+
+Setting `PGOPS_BENCH_OUT=<path>` makes every benchmark append a JSONL record to that
+file. CI does this on every run of the live suite and uploads the result as an
+artifact (`benchmarks-<sha>`), so each commit carries a dated receipt of what its
+budgets measured — a latency regression is visible in artifact history even after the
+gate has already been fixed and passes again.
+
+Two record shapes, matching what each scenario actually measures:
+
+```jsonl
+{"ts": "...", "scenario": "query.read(count)", "n": 20, "p50_ms": 14.27, "p95_ms": 15.42, "p99_ms": 15.42, "budget_p95_ms": 500}
+{"ts": "...", "scenario": "concurrent(10 reads)", "batch_ms": 226.45, "single_p50_ms": 45.49, "ratio": 4.98, "budget_ratio": 8.0}
+```
+
+The concurrency scenario records one wall-clock batch number plus the ratio against
+single-call p50 — it deliberately does *not* fabricate per-call samples.
+
 ## Also asserted (correctness evals, same suite)
 
 - Full verdict taxonomy reachable end-to-end: `executed` / `refused` / `denied` / `failed`

@@ -14,4 +14,37 @@ jobs:
       - run: uv sync --extra dev
       - run: uv run ruff check .
       - run: uv run mypy src
+      # Default suite: everything except the live HTTP evaluation suite
+      # (test_live_server.py / test_redteam.py are marked `live` and skipped here).
       - run: uv run pytest -q
+
+  live-eval:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --extra dev
+      # The live suite boots the real server over HTTP (JWT auth, scope enforcement,
+      # observability middleware) against a testcontainers Postgres, runs the full
+      # verdict-taxonomy evals, the red-team attack suite, AND the latency benchmarks.
+      # PGOPS_BENCH_OUT makes every benchmark write a JSONL record — the artifact below
+      # is dated evidence of what the p95 budgets measured on this commit's hardware,
+      # so a latency regression shows up in artifact history even after the gate passes
+      # again. Budgets are generous (~10x headroom) because they are regression
+      # tripwires, not speed claims; see docs/BENCHMARKS.md.
+      - name: Run live eval + red-team + benchmark suite
+        env:
+          PGOPS_BENCH_OUT: ${{ github.workspace }}/bench-results/benchmarks.jsonl
+        run: >
+          uv run pytest tests/test_live_server.py tests/test_redteam.py -m live -q
+          --junitxml=live-report.xml
+      - name: Upload benchmark evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmarks-${{ github.sha }}
+          path: |
+            bench-results/benchmarks.jsonl
+            live-report.xml
+          if-no-files-found: warn

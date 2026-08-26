@@ -22,9 +22,13 @@ testcontainers Postgres.
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -35,6 +39,32 @@ from fastmcp.exceptions import ToolError
 from pgops.auth import Scope, build_verifier, generate_keypair, issue_token
 
 pytestmark = pytest.mark.live
+
+# When PGOPS_BENCH_OUT is set (CI does this), every benchmark result is appended as a
+# JSON line. The file is the *evidence* half of the benchmark story: the assertions in
+# these tests are the gate, this file is the receipt — a dated record of what the
+# budgets measured on real hardware, uploadable as a CI artifact and diffable across
+# commits so a latency regression is visible in the artifact history, not just in a
+# red test that has already been fixed by the time anyone looks.
+_BENCH_OUT = os.environ.get("PGOPS_BENCH_OUT")
+
+
+def _record_bench(bench: Bench, budget_ms: float) -> None:
+    if not _BENCH_OUT:
+        return
+    entry = {
+        "ts": datetime.now(UTC).isoformat(),
+        "scenario": bench.name,
+        "n": len(bench.samples_ms),
+        "p50_ms": round(bench.p50, 2),
+        "p95_ms": round(bench.p95, 2),
+        "p99_ms": round(bench.p99, 2),
+        "budget_p95_ms": budget_ms,
+    }
+    path = Path(_BENCH_OUT)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(entry) + "\n")
 
 
 # --- server lifecycle -----------------------------------------------------------------
@@ -109,7 +139,9 @@ class Bench:
 
 
 def _assert_bench(bench: Bench, p95_budget_ms: float) -> None:
-    """Assert + print. The assertion makes it a gate; the print makes it evidence."""
+    """Assert + print + record. The assertion makes it a gate; the print makes it
+    evidence in the terminal; the JSONL record (when PGOPS_BENCH_OUT is set) makes it
+    evidence that survives the run."""
     assert bench.p95 <= p95_budget_ms, (
         f"{bench.name}: p95 {bench.p95:.1f}ms exceeded budget {p95_budget_ms}ms "
         f"(p50={bench.p50:.1f}ms, n={len(bench.samples_ms)})"
@@ -118,6 +150,7 @@ def _assert_bench(bench: Bench, p95_budget_ms: float) -> None:
         f"BENCH {bench.name:<28} n={len(bench.samples_ms):>3}  "
         f"p50={bench.p50:>7.1f}ms  p95={bench.p95:>7.1f}ms"
     )
+    _record_bench(bench, p95_budget_ms)
 
 
 async def _timed_call(client: Client, bench: Bench, tool: str, args: dict[str, Any]) -> Any:
@@ -369,3 +402,21 @@ async def test_bench_concurrent_reads_no_serialization(
         "reads appear to be serializing"
     )
     print(f"BENCH concurrent(10 reads)             batch={batch_ms:.0f}ms")
+    if _BENCH_OUT:
+        # The concurrency scenario measures one wall-clock number, not per-call
+        # samples, so it gets its own record shape rather than pretending otherwise.
+        # Blocking file I/O is fine here: one tiny append after the timed section.
+        with Path(_BENCH_OUT).open("a", encoding="utf-8") as f:  # noqa: ASYNC230
+            f.write(
+                json.dumps(
+                    {
+                        "ts": datetime.now(UTC).isoformat(),
+                        "scenario": "concurrent(10 reads)",
+                        "batch_ms": round(batch_ms, 2),
+                        "single_p50_ms": round(single.p50, 2),
+                        "ratio": round(batch_ms / single.p50, 2) if single.p50 else None,
+                        "budget_ratio": 8.0,
+                    }
+                )
+                + "\n"
+            )

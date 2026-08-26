@@ -9,3 +9,6 @@ dist/
 
 # secrets / local env
 .env
+
+# local benchmark runs (CI uploads its own as artifacts)
+bench-results/benchmarks.jsonl
