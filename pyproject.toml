@@ -93,3 +93,15 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 module = "docker.*"
 ignore_missing_imports = true
+
+# Optional at runtime and absent from the default dev environment: observability.py
+# imports these lazily and degrades to a no-op when they are missing, which is the whole
+# design. Without these overrides `mypy src` fails for anyone who has not installed the
+# `otel` extra — including CI, which syncs only `--extra dev`.
+[[tool.mypy.overrides]]
+module = "opentelemetry.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "aiohttp.*"
+ignore_missing_imports = true
