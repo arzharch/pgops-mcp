@@ -67,6 +67,26 @@ jobs:
             ghcr.io/arzharch/pgops-mcp:${{ github.ref_name }}
             ghcr.io/arzharch/pgops-mcp:latest
 
+  github-release:
+    # A GitHub Release is where most people land from a changelog link or a tag, so the
+    # notes are generated from CHANGELOG.md rather than written twice — two hand-written
+    # descriptions of one release drift immediately, and the one nobody regenerates is
+    # the one that goes stale.
+    needs: [pypi, container]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # creating a release writes to the repository
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Build release notes from the changelog
+        run: uv run python scripts/release_notes.py "${GITHUB_REF_NAME#v}" > NOTES.md
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME"             --title "$GITHUB_REF_NAME"             --notes-file NOTES.md             --verify-tag
+
   registry:
     # Last, and only after both artifacts exist: the registry validates that the PyPI
     # package and the container image are really published and really ours.

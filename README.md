@@ -2,20 +2,74 @@
 
 <!-- mcp-name: io.github.arzharch/pgops-mcp -->
 
-> A production-grade MCP server that gives AI agents safe, audited, expert-level control
-> over a real PostgreSQL database and the Docker stack around it — no shell commands,
-> no Python scripts, just tools.
+> **Let an AI assistant operate your PostgreSQL database — without letting it wreck
+> anything.**
 
-## Why
+Point Claude, Cursor, or VS Code at a database and ask questions in plain English. Your
+assistant gets 17 tools for inspecting schemas, running queries, diagnosing slow ones,
+and planning migrations. What it does *not* get is a way to quietly destroy your data.
 
-Existing Postgres MCP servers are thin query wrappers: introspect + SELECT. None handle
-migrations with lock-impact analysis, none diagnose performance from `EXPLAIN` +
-`pg_stat_statements`, none understand the containerized environment the database lives in.
-Agents operating databases today are flying blind and unsafe.
+## What it actually looks like
+
+Every number below is real output from the demo database in this repo — 1.2M rows,
+114 MB.
+
+> **You:** I want to index `orders.status`
+
+> **Assistant:** *(calls `migration.plan`)*
+
+```
+CREATE INDEX "idx_orders_status" ON "orders" (status)
+  risk=medium   estimate=4000ms   confidence=medium
+  blocks:  writes yes, reads no
+  SAFER:   CREATE INDEX CONCURRENTLY "idx_orders_status" ON "orders" (status)
+```
+
+> **Assistant:** A plain index build blocks writes for roughly 4 seconds. `CONCURRENTLY`
+> is slower overall but keeps writes working. Which do you want?
+
+The tool didn't return a raw plan for the model to interpret — it returned a **verdict**,
+a duration estimate with an honest confidence level, and the safer alternative.
+
+`query.explain` works the same way. Instead of handing back JSON, it says things like:
+
+```
+planner overestimated rows by 5833x (estimated 239,160, actual 40)
+  -> run ANALYZE; if it persists the columns may be correlated, consider CREATE STATISTICS
+```
+
+### And when something is genuinely dangerous
+
+> **You:** clear out the orders table
+
+> **Assistant:** *(calls `query.write` with `DELETE FROM orders`)*
+
+```
+CONFIRMATION_REQUIRED
+DELETE has no WHERE clause and would affect every row in the table
+```
+
+Where your client supports it, the approval prompt goes to **you** — not to the
+assistant. Nothing runs until a human answers, and the refusal is written to the audit
+log whether or not you approve.
+
+That last part is the point. **The assistant cannot approve its own dangerous action,
+because it is not the one being asked.** Where a client can't show a prompt, it degrades
+to a single-use token bound to that exact statement — never to "allowed".
+
+## Why this exists
+
+Most Postgres MCP servers are thin query wrappers: introspect and `SELECT`. None handle
+migrations with lock-impact analysis, none diagnose performance from `EXPLAIN` and
+`pg_stat_statements`, and none understand the container the database runs in. Agents
+operating databases today are doing it blind, and without guardrails.
 
 `pgops-mcp` is the operations brain: **schema intelligence → guarded queries → migration
 engine → performance diagnosis → environment awareness**, with a safety architecture that
 makes every action classifiable, confirmable, and auditable.
+
+**New here?** [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md) is a 15-minute guided
+tour that assumes no MCP knowledge.
 
 ## Tool surface
 

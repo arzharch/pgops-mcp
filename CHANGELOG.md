@@ -9,7 +9,7 @@ scopes — not Python symbols.
 
 ## [Unreleased]
 
-## [0.1.1] — unreleased
+## [0.1.1] — 2026-08-27
 
 First release intended for distribution. Everything below is relative to the initial
 development history rather than a previous published version.
