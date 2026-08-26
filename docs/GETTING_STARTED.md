@@ -24,8 +24,7 @@ You ──talks to──> Claude/Cursor ──calls tools──> pgops-mcp ─�
 ## Step 1 — Prerequisites check
 
 ```bash
-python --version   # need 3.12+
-uv --version       # need uv; pip install uv if missing
+uv --version       # need uv; pip install uv if missing — it brings its own Python
 psql "$YOUR_DSN" -c "SELECT 1"   # confirm Postgres reachable
 ```
 
@@ -33,12 +32,22 @@ No database handy? Skip ahead — Step 3 spins one up.
 
 ## Step 2 — Install
 
+There is nothing to clone. pgops-mcp is an MCP server, not a library, so you run it
+rather than import it:
+
 ```bash
-git clone <repo-url> pgops-mcp && cd pgops-mcp
-uv sync
+uvx pgops-mcp --selfcheck --dsn "$YOUR_DSN"
 ```
 
-That's the whole install. `uv sync` creates the virtualenv and installs everything.
+`uvx` fetches it into a throwaway environment on first use. If you would rather keep a
+Python toolchain off this machine entirely, the container works the same way:
+
+```bash
+docker run --rm -e PGOPS_DSN="$YOUR_DSN" ghcr.io/arzharch/pgops-mcp:latest --selfcheck
+```
+
+(Working *on* pgops-mcp instead of with it? That is the `git clone` path — see
+[CONTRIBUTING.md](../CONTRIBUTING.md).)
 
 ## Step 3 — Get a database (skip if you have one)
 
