@@ -125,6 +125,11 @@ use `host.docker.internal` or a compose service name.
 uvx pgops-mcp --selfcheck --dsn "postgresql://user:pass@localhost:5432/mydb"
 ```
 
+Both paths install the same server and are listed together in the
+[MCP Registry](https://registry.modelcontextprotocol.io) entry — they fail for different
+people. `uvx` needs nothing preinstalled but assumes the host may run Python; the
+container assumes only Docker.
+
 See **[SETUP.md](SETUP.md)** for configuration, HTTP transport, agent tokens and
 troubleshooting, and [CONTRIBUTING.md](CONTRIBUTING.md) to run it from a source checkout.
 

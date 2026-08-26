@@ -34,6 +34,8 @@ development history rather than a previous published version.
   confirmation.
 - **Optional OpenTelemetry** spans and metrics plus `/health` and `/ready`; a no-op with
   zero configuration.
+- **Per-caller tool-call rate limiting** under HTTP auth, keyed by token subject so one
+  agent cannot spend another's budget. `PGOPS_RATE_LIMIT_RPS=0` disables it.
 - Distribution as a **PyPI package** and a **container image**, with `server.json` for
   the MCP Registry.
 
@@ -51,6 +53,12 @@ development history rather than a previous published version.
   `.gitignore` before the key itself.
 - **`EXPLAIN` plan timing double-counted parallel workers**, reporting more time consumed
   than the query took.
+- **`server.json`'s description exceeded the registry's 100-character limit**, which
+  would have been rejected at the final step of a release — after PyPI had already
+  accepted an immutable version number. Now validated against the published schema in
+  the test suite.
+- **The server reported no version to clients.** `serverInfo` in the MCP `initialize`
+  handshake was empty, so a client had no way to detect a changed tool contract.
 - **The audit log did not record the calling identity**, so an HTTP deployment could
   answer "what happened" but not "who did it".
 - Documentation was double-encoded (`—` rendered as `â€"`) across six files, including

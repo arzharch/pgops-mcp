@@ -946,39 +946,41 @@ uv run pytest -q      # 1 passed
 
 ## Next up
 
-Everything the previous "Next up" listed has shipped — sampling, completions,
-`migration.rollback`, the audit-log subject, the volatile-function classifier gap, and
-packaging. What remains is listed honestly rather than quietly dropped.
-
 ### Blocking a first release
 
-- [ ] **Publish.** The pipeline is written and its preconditions verified locally, but
-      nothing has been pushed yet. Requires, in order: a PyPI project with Trusted
-      Publishing configured for this repo, a `release` GitHub environment, then a `v*`
-      tag. The MCP Registry entry is the last step and is automatic.
-- [ ] **Verify on a machine that is not this one.** The clean-room test proves the wheel
-      installs into an empty venv on *this* Windows host. Linux and macOS are covered by
-      CI running the suite, not by anyone actually installing the published artifact.
+- [ ] **PyPI project + Trusted Publishing.** Create the `pgops-mcp` project on PyPI and
+      add a trusted publisher for `arzharch/pgops-mcp`, workflow `publish.yml`,
+      environment `release`. Nothing else needs a secret — GHCR uses `GITHUB_TOKEN` and
+      the registry uses OIDC.
+- [ ] **A `release` GitHub environment**, so the PyPI job's `environment: release` gate
+      resolves.
+- [ ] **Tag `v0.1.1`.** Everything after that is automatic: verify → PyPI + GHCR →
+      MCP Registry.
+- [ ] **Verify on a machine that is not this one.** The clean-room install and the
+      container both work on this Windows host; Linux and macOS are covered by CI running
+      the suite, not by anyone installing the published artifact.
 
 ### Known limits, deliberately not built
 
-- [ ] **Per-session DSN isolation for HTTP.** Auth identifies the caller and scopes
-      limit *what* they may do, but every authenticated caller still shares one
-      `ConnectionManager`, one audit log and one in-memory plan/token store. Correct for
-      the intended shape (one engineer, one or a few databases); insufficient for
-      multi-tenant SaaS. Documented as a non-goal in SETUP.md rather than half-built.
+- [ ] **Per-session DSN isolation for HTTP.** Auth identifies the caller, scopes limit
+      what they may do, and the rate limiter bounds how often — but every authenticated
+      caller still shares one `ConnectionManager`, one audit log, and one in-memory
+      plan/token store. Correct for the intended shape (one engineer, one or a few
+      databases); insufficient for multi-tenant SaaS. Documented as a non-goal in
+      SECURITY.md and SETUP.md rather than half-built.
 - [ ] **`index.advise` names the table taking sequential scans, not the column** to
-      index — that needs per-statement plan inspection. It currently says so ("run
-      `query.explain` on this statement") instead of fabricating a `CREATE INDEX`.
+      index — that needs per-statement plan inspection. It says so ("run `query.explain`
+      on this statement") instead of fabricating a `CREATE INDEX`.
 - [ ] **`DROP INDEX` / `DROP CONSTRAINT` are irreversible in `migration.rollback`**,
       because the object's definition is not captured before the drop. Recoverable in
-      principle: record `pg_get_indexdef` / `pg_get_constraintdef` at plan time. Until
-      then the rollback refuses and says why, rather than reconstructing a `CREATE`
-      statement from assumptions.
+      principle: record `pg_get_indexdef` / `pg_get_constraintdef` at plan time.
+- [ ] **Rate limiting is per-process.** Two server processes behind a load balancer each
+      enforce their own budget. Fine for the intended single-process deployment; a
+      shared limit would need Redis or equivalent, which is ADR-006's tier-three
+      territory.
 
 ### Worth doing, not urgent
 
-- [ ] **Smithery listing** — a second marketplace, separate manifest format from
-      `server.json`.
-- [ ] **Demo recording.** The lock-analysis output on a 1.2M-row table is the single
-      most convincing artifact this project has and it currently only exists as text.
+- [ ] **Smithery listing** — a second marketplace, separate manifest format.
+- [ ] **Demo recording.** The lock-analysis output on a 1.2M-row table is the most
+      convincing artifact this project has and it exists only as text.
