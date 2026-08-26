@@ -40,14 +40,27 @@ def test_no_internal_directory_is_tracked() -> None:
 
 def test_private_notes_directory_is_ignored() -> None:
     """They stay on disk — they are useful — but git must never pick them up, including
-    via a `git add -A` that someone runs without thinking."""
-    result = subprocess.run(
-        ["git", "check-ignore", "-q", ".private"],
-        cwd=ROOT,
-        capture_output=True,
-        check=False,  # a non-zero exit is the assertion, not an error
-    )
-    assert result.returncode == 0, ".private/ is not gitignored"
+    via a `git add -A` that someone runs without thinking.
+
+    The paths checked are files *inside* `.private/`, not the directory itself, and that
+    is load-bearing rather than stylistic. The ignore rule is written `.private/` with a
+    trailing slash, which matches directories only — so `git check-ignore .private`
+    answers "not ignored" whenever the directory does not exist on disk, because git
+    cannot tell an absent path is a directory. It exists on a developer's machine and
+    never in CI (it is ignored, so it is never checked out), which is exactly how this
+    passed locally and failed on the runner.
+
+    Checking `.private/flow.md` also tests the thing that actually matters: whether a
+    file in there could be committed.
+    """
+    for name in sorted(PRIVATE_NAMES):
+        result = subprocess.run(
+            ["git", "check-ignore", "-q", f".private/{name}"],
+            cwd=ROOT,
+            capture_output=True,
+            check=False,  # a non-zero exit is the assertion, not an error
+        )
+        assert result.returncode == 0, f".private/{name} is not gitignored"
 
 
 def test_design_docs_are_still_public() -> None:
