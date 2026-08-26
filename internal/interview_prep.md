@@ -1447,6 +1447,39 @@ real break before it ever ran: an unquoted `mcp-name: ...` inside a `run:` value
 invalid YAML — `mapping values are not allowed here` — so the publish workflow would
 have failed on its first execution, at the worst possible moment.
 
+### Q: Tell me about a flaky test you had to debug.
+
+Two suites hardcoded the same HTTP port, 8795 — `test_live_server`, and
+`test_audit_identity` which I had added earlier the same day. Each passed on its own.
+Together, one either failed to bind or, worse, **connected to the other suite's server
+and made assertions about it.**
+
+The debugging lesson is where the failure *appeared*: fifteen errors in
+`test_redteam.py`, which runs after both of them. The file that broke was not the file
+that was wrong. What pointed at the real cause was the shape of the failure — **passing
+in isolation and failing in the suite is the signature of a shared-resource collision,
+not a logic bug.** Once you name it that way, the search is "what resource do these
+share", and the answer is one grep.
+
+The fix I did *not* make: renumbering to 8797. That leaves the same trap for whoever
+adds the next server-booting suite. Instead:
+
+```python
+def free_port() -> int:
+    """Reserve an unused TCP port for a test that boots a real HTTP server."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+```
+
+Applied to all five suites that boot a server. There is a small race between closing
+that socket and uvicorn binding it — worth stating rather than hiding — but it is far
+narrower than the *certainty* of collision with hardcoded numbers.
+
+Function scope made it worse in a way worth knowing: the red-team fixture boots a server
+per test, so it rebinds the same port fifteen times in a row, and on Windows rapid
+rebinding can land in `TIME_WAIT`.
+
 ### Q: What is *not* ready?
 
 Worth saying plainly, because the honest version is more credible than a claim of done:

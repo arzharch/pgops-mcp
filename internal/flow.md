@@ -77,6 +77,23 @@ dev environment, where every dev extra is already present) surfaced all three:
 - **PHASE-6f · `CONTRIBUTING.md`**, so `git clone` + `uv sync` lives where contributors
   look and no longer greets users on the front page.
 
+### One flaky-test bug, worth recording
+
+- **PHASE-6f · two suites both hardcoded port 8795.** `test_live_server` and
+  `test_audit_identity` (the latter added earlier this session) each booted a real HTTP
+  server on the same fixed port. Each passed in isolation and the pair failed in the
+  full run — one either failed to bind or, worse, connected to the *other* suite's
+  server and asserted about it. The visible symptom was a cascade of fifteen unrelated
+  errors in `test_redteam`, which runs after them, so the failure pointed at the wrong
+  file entirely.
+
+  Passing alone and failing together is the signature of a shared-resource collision
+  rather than a real defect, which is what made it findable. Fixed with a `free_port()`
+  helper in conftest that binds port 0 and lets the OS choose — applied to all five
+  suites that boot a server, since renumbering would have left the same trap for the
+  next one. Function-scoped fixtures made it worse: the red-team suite rebinds per test,
+  fifteen times in a row, which on Windows can land in TIME_WAIT.
+
 ### Gate evidence
 
 - Clean-room install from the built wheel into an empty venv: `pgops-mcp --selfcheck`
