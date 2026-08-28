@@ -17,6 +17,17 @@ database failure injection. The performance, limits and security all held; three
 reached an opaque `INTERNAL_ERROR` where a clean, actionable error was owed.
 
 ### Fixed
+- **`migration.apply` executed a stale plan without re-checking the live schema.** The
+  design (and the module docstring) said apply re-plans against the current schema so
+  "the schema moved under you" becomes a refusal — but the code re-hashed the cached
+  plan's own steps against its own checksum, which always matches and never touched the
+  database. So a plan built against one schema applied its cached steps blindly against a
+  later one. Verified on a live database: a plan to drop a column, applied after that
+  column was replaced out of band, ran anyway. apply now re-diffs the stored target
+  against the live schema and refuses with `MIGRATION_STALE` on any structural mismatch
+  (a column you were adding now exists, a type changed). Structural drift only — a column
+  dropped and re-created with an identical definition but different data is invisible to a
+  schema diff, and is documented as a known limit in SECURITY.md.
 - **A lost database connection surfaced as `INTERNAL_ERROR` on every tool.** SIGKILLing
   the database mid read-storm returned "internal error; see server logs" for calls in
   flight — the least useful message during an outage, and invisible over stdio where the
