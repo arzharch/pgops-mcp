@@ -408,7 +408,14 @@ def build_server(config: PgopsConfig, conn_manager: ConnectionManager, auth: Any
         percentage requires two samples to compute a delta."""
         return await container_stats(name)
 
-    if config.approval_mode:
+    # Read-only mode withholds these too, and that is not redundant with the approval
+    # gate. `container.restart` drops every open connection — in-flight transactions are
+    # lost — and `container.exec` runs commands inside the host of the database. Neither
+    # is a read. A user who sets PGOPS_READ_ONLY=1 is stating that this server may not
+    # change anything, and "except by restarting your database" is not a reading of that
+    # anyone would expect. The two gates answer different questions (may this server
+    # mutate at all / has an operator opted into host-level capability), so both apply.
+    if config.approval_mode and not config.read_only:
 
         @mcp.tool(name="container.restart")
         @tool_boundary

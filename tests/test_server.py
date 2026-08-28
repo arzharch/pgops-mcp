@@ -142,3 +142,27 @@ async def test_migration_plan_publishes_the_target_grammar(
     # An index is a column list — a string or a list of strings, never an object.
     index = tables["properties"]["indexes"]["additionalProperties"]
     assert {"type": "string"} in index["anyOf"]
+
+
+async def test_read_only_mode_also_withholds_the_container_state_changers(dsn: str) -> None:
+    """PGOPS_READ_ONLY=1 must mean this server changes nothing.
+
+    `container.restart` and `container.exec` were gated on approval mode alone, so a
+    read-only server started with approval mode on still advertised both. Restarting the
+    database container drops every open connection and loses in-flight transactions,
+    which is not a read by any reading of the word — and container.exec runs commands on
+    the host of the database. Probed on a live server: with PGOPS_READ_ONLY=1 the write
+    tools were correctly absent and these two were still listed.
+    """
+    ro_config = PgopsConfig.from_env(dsn=dsn, read_only=True, approval_mode=True)
+    manager = ConnectionManager(ro_config)
+    await manager.start()
+    try:
+        names = {t.name for t in await build_server(ro_config, manager).list_tools()}
+        assert "container.restart" not in names
+        assert "container.exec" not in names
+        # Read-only diagnostics stay: they are the point of the mode.
+        assert "container.logs" in names
+        assert "env.topology" in names
+    finally:
+        await manager.stop()
