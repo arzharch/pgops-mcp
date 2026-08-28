@@ -166,3 +166,58 @@ def test_estimates_are_never_presented_as_certain() -> None:
     ]:
         impact = analyze_statement(sql, BIG)
         assert impact.confidence is not Confidence.HIGH, sql
+
+
+# --- ADD COLUMN with a constant default -------------------------------------------
+#
+# Verified on Postgres 16 before writing these:
+#
+#     ALTER TABLE orders ADD COLUMN priority int DEFAULT 0 NOT NULL;
+#     -- relfilenode 16399 -> 16399, size 33538048 -> 33538048
+#     -- pg_attribute.atthasmissing = t, attmissingval = {0}
+#
+# No rewrite. It was reported as one (high risk, blocks reads and writes, ~1.6s on 400k
+# rows) because the constant-default pattern is anchored at end-of-string and the
+# trailing " NOT NULL" broke the match. diff.py emits DEFAULT before NOT NULL, so every
+# {"nullable": false, "default": ...} column pgops generates hit this.
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        'ALTER TABLE "orders" ADD COLUMN "priority" int DEFAULT 0 NOT NULL',
+        "ALTER TABLE orders ADD COLUMN tag text DEFAULT 'new' NOT NULL",
+        "ALTER TABLE orders ADD COLUMN ts timestamptz DEFAULT now() NOT NULL",
+        "ALTER TABLE orders ADD COLUMN n int DEFAULT NULL",
+        "ALTER TABLE orders ADD COLUMN c text DEFAULT 'x' COLLATE \"C\"",
+    ],
+)
+def test_constant_default_is_not_a_rewrite_despite_trailing_constraints(sql: str) -> None:
+    impact = analyze_statement(sql, 400_000)
+    assert impact.rewrites_table is False, impact.reasoning
+    assert impact.estimate_ms <= 10
+
+
+def test_volatile_default_is_still_a_rewrite_with_a_trailing_not_null() -> None:
+    """The strip must remove constraints, not rescue a genuinely volatile default."""
+    impact = analyze_statement(
+        "ALTER TABLE orders ADD COLUMN r float DEFAULT random() NOT NULL", 400_000
+    )
+    assert impact.rewrites_table is True
+    assert impact.risk == "high"
+
+
+def test_inline_unique_on_a_new_column_is_an_index_build_not_a_catalog_change() -> None:
+    """Stripping UNIQUE to find the default must not make the index build disappear.
+
+    UNIQUE and PRIMARY KEY build an index over every existing row under
+    AccessExclusiveLock. Before the strip existed the statement was misfiled as a
+    rewrite — wrong, but not cheap. It must not become cheap.
+    """
+    impact = analyze_statement(
+        "ALTER TABLE orders ADD COLUMN flag bool DEFAULT true NOT NULL UNIQUE", 400_000
+    )
+    assert impact.rewrites_table is False
+    assert impact.estimate_ms > 100, "an index build over 400k rows is not instant"
+    assert impact.safe_alternative is not None
+    assert "CONCURRENTLY" in impact.safe_alternative

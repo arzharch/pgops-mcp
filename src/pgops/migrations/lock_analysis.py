@@ -130,6 +130,41 @@ _CONSTANT_DEFAULT_RE = re.compile(
     re.IGNORECASE | re.VERBOSE,
 )
 
+# A DEFAULT expression ends where the next column constraint begins, and the regex above
+# is anchored at end-of-string. Without this strip, the single most common safe pattern —
+#
+#     ALTER TABLE orders ADD COLUMN priority int DEFAULT 0 NOT NULL
+#
+# which is exactly what diff.py generates for {"nullable": false, "default": "0"} — fails
+# the constant match on the trailing " NOT NULL" and is reported as a full table rewrite:
+# high risk, blocks reads and writes, with a three-step batched-backfill alternative
+# recommended in place of it. Verified on Postgres 16: relfilenode unchanged, size
+# unchanged, pg_attribute.attmissingval = {0}. The operation is instant.
+#
+# Bare NULL is deliberately not stripped, because `DEFAULT NULL` is itself a valid
+# constant default and the pattern above matches it.
+_TRAILING_COLUMN_CONSTRAINT_RE = re.compile(
+    r"""\s+(
+        not\s+null
+      | primary\s+key
+      | unique
+      | check\s*\(.*
+      | references\s+.*
+      | generated\s+.*
+      | collate\s+\S+
+    )\s*$""",
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def _default_expression(default_clause: str) -> str:
+    """Trim column constraints that follow a DEFAULT, leaving the expression alone."""
+    previous = None
+    while previous != default_clause:
+        previous = default_clause
+        default_clause = _TRAILING_COLUMN_CONSTRAINT_RE.sub("", default_clause).rstrip()
+    return default_clause
+
 
 def _estimate_ms(rows: int, rate_per_sec: int) -> int:
     return max(int(rows / rate_per_sec * 1000), 1)
@@ -288,7 +323,9 @@ def _analyze_alter_table(normalized: str, upper: str, rows: int) -> LockImpact:
     # --- ADD COLUMN: the constant-vs-volatile DEFAULT split (see module docstring) ---
     if " ADD COLUMN " in upper or re.search(r"\bADD\s+(COLUMN\s+)?\w+\s+\w", upper):
         if " DEFAULT " in upper:
-            default_clause = "DEFAULT " + normalized.upper().split(" DEFAULT ", 1)[1]
+            default_clause = _default_expression(
+                "DEFAULT " + normalized.upper().split(" DEFAULT ", 1)[1]
+            )
             is_constant = bool(_CONSTANT_DEFAULT_RE.match(default_clause))
             if not is_constant:
                 return LockImpact(
@@ -310,6 +347,31 @@ def _analyze_alter_table(normalized: str, upper: str, rows: int) -> LockImpact:
                         "batches, then SET DEFAULT for future rows."
                     ),
                 )
+        # An inline UNIQUE or PRIMARY KEY on the new column is not a catalog change: it
+        # builds an index over the whole table under AccessExclusiveLock. Reaching this
+        # branch was previously impossible because the trailing-constraint text also
+        # broke the constant-default match, so the statement was misfiled as a rewrite —
+        # wrong for the wrong reason, but not silently cheap. It must not become cheap.
+        if re.search(r"\bUNIQUE\b|\bPRIMARY\s+KEY\b", upper):
+            return LockImpact(
+                operation=OperationClass.INDEX_BUILD,
+                lock_mode="AccessExclusiveLock",
+                blocks_reads=True,
+                blocks_writes=True,
+                rewrites_table=False,
+                estimate_ms=_estimate_ms(rows, INDEX_BUILD_ROWS_PER_SEC),
+                confidence=Confidence.MEDIUM,
+                reasoning=(
+                    "ADD COLUMN with an inline UNIQUE or PRIMARY KEY builds an index "
+                    "over every existing row, and holds AccessExclusiveLock for the "
+                    "whole build — not the microseconds a plain ADD COLUMN takes."
+                ),
+                safe_alternative=(
+                    "Add the column without the constraint, build the index with "
+                    "CREATE UNIQUE INDEX CONCURRENTLY, then attach it with "
+                    "ALTER TABLE ... ADD CONSTRAINT ... USING INDEX."
+                ),
+            )
         return LockImpact(
             operation=OperationClass.METADATA_ONLY,
             lock_mode="AccessExclusiveLock",
