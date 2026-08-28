@@ -55,6 +55,20 @@ _SEVERITY_RE = re.compile(
 # "restart this container". The default is therefore an allowlist of read-only
 # diagnostic commands; anything else is refused with an explanation. An operator who
 # genuinely wants a shell has one — this tool is not the right way to get it.
+#
+# `psql` and `postgres` were on this list and are not any more, because both defeat the
+# rule the list exists to enforce. Verified against a live container:
+#
+#     psql -U u -d d -c "CREATE TABLE pwned(x int)"   -> exit 0, table created
+#     psql -U u -d d -c "\! id"                       -> uid=0(root) gid=0(root)
+#
+# The first bypasses every SQL safety layer in this server — classification, scope
+# enforcement, the migration ledger, the lock analysis — because none of it sees SQL
+# that travels as an argv string to a client binary. The second is `\!`, psql's shell
+# escape, which is precisely the arbitrary shell the paragraph above says this tool
+# does not offer. `pg_isready` covers the diagnostic case (is the server accepting
+# connections) without carrying a SQL interpreter, and anything needing actual SQL has
+# query.read, which is audited and classified.
 _EXEC_ALLOWLIST = {
     "ps",
     "df",
@@ -66,8 +80,6 @@ _EXEC_ALLOWLIST = {
     "netstat",
     "ss",
     "pg_isready",
-    "psql",
-    "postgres",
     "id",
     "whoami",
     "hostname",

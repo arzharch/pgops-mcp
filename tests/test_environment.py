@@ -278,7 +278,22 @@ async def test_exec_refused_without_approval_mode(tmp_path: Path) -> None:
     assert exc_info.value.code is ErrorCode.APPROVAL_MODE_REQUIRED
 
 
-@pytest.mark.parametrize("command", [["bash"], ["sh", "-c", "rm -rf /"], ["/bin/bash"], ["curl"]])
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["bash"],
+        ["sh", "-c", "rm -rf /"],
+        ["/bin/bash"],
+        ["curl"],
+        # psql was allowlisted until a live probe showed both of these succeeding:
+        # `-c` runs arbitrary SQL around every safety layer in this server, and `\!` is
+        # psql's own shell escape, which returned uid=0(root) from the database
+        # container. pg_isready covers the diagnostic case without a SQL interpreter.
+        ["psql", "-c", "CREATE TABLE pwned (x int)"],
+        ["psql", "-c", r"\! id"],
+        ["postgres", "--single"],
+    ],
+)
 async def test_exec_allowlist_blocks_shells_and_downloads(
     tmp_path: Path, command: list[str]
 ) -> None:
