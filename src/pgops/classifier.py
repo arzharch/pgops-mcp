@@ -70,7 +70,22 @@ class Classification:
 
 
 def classify(sql: str) -> Classification:
-    statements = [s for s in sqlparse.split(sql) if s.strip()]
+    try:
+        statements = [s for s in sqlparse.split(sql) if s.strip()]
+        parsed_first = sqlparse.parse(statements[0])[0] if statements else None
+    except (sqlparse.exceptions.SQLParseError, RecursionError, ValueError) as exc:
+        # sqlparse caps a statement at 10,000 tokens and raises SQLParseError past that;
+        # pathologically nested SQL can also blow the recursion limit. This function is
+        # the safety gate, and a statement it cannot parse is one it cannot vouch for —
+        # so it must fail CLOSED (UNKNOWN, which the guardrail treats as destructive and
+        # refuses), not escape as an opaque INTERNAL_ERROR. Found by fuzzing with a
+        # 20,000-element IN list against the live server.
+        return Classification(
+            StatementClass.UNKNOWN,
+            "UNPARSEABLE",
+            f"statement could not be parsed ({type(exc).__name__}); it is too large or "
+            "too deeply nested to classify safely",
+        )
     if len(statements) == 0:
         return Classification(StatementClass.UNKNOWN, "", "empty statement")
     if len(statements) > 1:
@@ -80,7 +95,8 @@ def classify(sql: str) -> Classification:
             f"submission contains {len(statements)} statements; only one is allowed per call",
         )
 
-    parsed = sqlparse.parse(statements[0])[0]
+    parsed = parsed_first
+    assert parsed is not None
     tokens: list[Token] = [
         tok
         for tok in parsed.flatten()  # type: ignore[no-untyped-call]

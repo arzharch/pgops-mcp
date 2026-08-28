@@ -300,3 +300,21 @@ def test_identifier_carrying_a_statement_is_refused(target: dict[str, object]) -
     with pytest.raises(PgopsError) as exc:
         diff_schema(LIVE, target)
     assert exc.value.code is ErrorCode.INVALID_ARGUMENT
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        {"tables": {"t": {"columns": {"c": {"type": {"nested": "junk"}}}}}},
+        {"tables": {"t": {"columns": {"c": {"type": ""}}}}},
+        {"tables": {"t": {"columns": {"c": {"type": "int", "default": {"x": 1}}}}}},
+        {"tables": {"t": {"columns": {"c": {"type": "int", "nullable": ["y"]}}}}},
+    ],
+)
+def test_non_scalar_column_fields_are_refused_not_crashed(target: dict[str, object]) -> None:
+    """A non-string type (or a dict default/nullable) used to pass validation and then
+    crash _column_definition with a TypeError -> opaque INTERNAL_ERROR. Found by fuzzing
+    the migration target."""
+    with pytest.raises(PgopsError) as exc:
+        diff_schema(LIVE, target)
+    assert exc.value.code is ErrorCode.INVALID_ARGUMENT

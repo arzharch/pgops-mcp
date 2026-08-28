@@ -259,6 +259,24 @@ def _validate_target(target: dict[str, Any]) -> None:
                     ErrorCode.INVALID_ARGUMENT,
                     f"column {table_name}.{col_name} must be an object with a 'type'",
                 )
+            # `type` must be a string. Without this, {"type": {"nested": "junk"}} passed
+            # the smuggle check (which stringified the dict) and then crashed
+            # _column_definition with a TypeError from " ".join on a dict — an opaque
+            # INTERNAL_ERROR rather than a clean refusal. Found by fuzzing the target.
+            if not isinstance(col["type"], str) or not col["type"].strip():
+                raise PgopsError(
+                    ErrorCode.INVALID_ARGUMENT,
+                    f"column {table_name}.{col_name} type must be a non-empty string, "
+                    f"got {type(col['type']).__name__}",
+                    hint='e.g. {"type": "bigint"} or {"type": "numeric(14,2)"}',
+                )
+            for opt in ("default", "nullable"):
+                if opt in col and isinstance(col[opt], (dict, list)):
+                    raise PgopsError(
+                        ErrorCode.INVALID_ARGUMENT,
+                        f"column {table_name}.{col_name} {opt} must be a scalar, "
+                        f"not a {type(col[opt]).__name__}",
+                    )
             col_extra = set(col) - _KNOWN_COLUMN_KEYS
             if col_extra:
                 raise PgopsError(

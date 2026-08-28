@@ -72,3 +72,14 @@ def test_read_gate_helper() -> None:
     assert classify("SELECT 1").is_read
     assert not classify("INSERT INTO t VALUES (1)").is_read
     assert not classify("VACUUM t").is_read
+
+
+def test_unparseable_statement_fails_closed_not_crash() -> None:
+    """sqlparse caps a statement at 10,000 tokens and raises past that. classify() is the
+    safety gate, so an unparseable statement must return UNKNOWN (which the guardrail
+    refuses), never escape as an opaque INTERNAL_ERROR. Found by fuzzing a 20,000-element
+    IN list against the live server."""
+    huge = "SELECT 1 WHERE x IN (" + ",".join("'a'" for _ in range(20000)) + ")"
+    c = classify(huge)
+    assert c.kind is StatementClass.UNKNOWN
+    assert "could not be parsed" in c.reason
