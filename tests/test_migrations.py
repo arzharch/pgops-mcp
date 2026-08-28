@@ -434,3 +434,61 @@ async def test_connection_lost_mid_apply_tells_the_caller_how_to_recover(
         conn_manager, audit, tokens, ledger_id, "failed", "column absent", confirm_token=token
     )
     assert result["resolved"] is True
+
+
+async def test_apply_refuses_a_plan_when_the_schema_drifted(
+    conn_manager: ConnectionManager,
+    config: PgopsConfig,
+    audit: AuditLog,
+    tokens: ConfirmationTokenStore,
+) -> None:
+    """The module docstring promised apply re-plans against the live schema so 'the schema
+    moved under you' becomes a refusal. It did not: the old code re-hashed the cached
+    plan's own steps against its own checksum, which always matches, and never touched the
+    database. Verified against a live server: a plan applied after another change landed
+    executed its stale steps blindly. Now apply re-diffs the stored target and refuses on
+    a mismatch.
+    """
+    conn = await asyncpg.connect(config.dsn)
+    try:
+        await conn.execute("DROP TABLE IF EXISTS drift_probe")
+        await conn.execute("CREATE TABLE drift_probe (id int PRIMARY KEY)")
+        plan = await migration_plan(
+            conn_manager, config, {"tables": {"drift_probe": {"columns": {"c": {"type": "text"}}}}}
+        )
+        # Someone else lands the same column between plan and apply.
+        await conn.execute("ALTER TABLE drift_probe ADD COLUMN c text")
+        with pytest.raises(PgopsError) as exc:
+            await migration_apply(
+                conn_manager, config, audit, tokens, plan.plan_id, name="drifted"
+            )
+        assert exc.value.code is ErrorCode.MIGRATION_STALE
+        assert "changed since this plan" in exc.value.message
+    finally:
+        await conn.execute("DROP TABLE IF EXISTS drift_probe")
+        await conn.close()
+
+
+async def test_apply_still_works_when_the_schema_has_not_drifted(
+    conn_manager: ConnectionManager,
+    config: PgopsConfig,
+    audit: AuditLog,
+    tokens: ConfirmationTokenStore,
+) -> None:
+    """The drift re-check must not break the normal path — an unchanged schema applies."""
+    conn = await asyncpg.connect(config.dsn)
+    try:
+        await conn.execute("DROP TABLE IF EXISTS nodrift_probe")
+        await conn.execute("CREATE TABLE nodrift_probe (id int PRIMARY KEY)")
+        plan = await migration_plan(
+            conn_manager,
+            config,
+            {"tables": {"nodrift_probe": {"columns": {"c": {"type": "text"}}}}},
+        )
+        result = await migration_apply(
+            conn_manager, config, audit, tokens, plan.plan_id, name="clean"
+        )
+        assert result["applied"] is True
+    finally:
+        await conn.execute("DROP TABLE IF EXISTS nodrift_probe")
+        await conn.close()

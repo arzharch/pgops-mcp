@@ -60,6 +60,12 @@ Stated plainly rather than left to be discovered:
   a superuser DSN can read the whole cluster. **Connect with a least-privilege role**
   (and prefer `PGOPS_READONLY_DSN` for the read pool); the role's `GRANT`s are the data
   boundary, and a broad one is a broad exposure regardless of token scope.
+- **Migration drift detection is structural, not data-level.** `migration.apply` re-diffs
+  its plan against the live schema and refuses (`MIGRATION_STALE`) if the structure moved
+  since planning — a column you were adding now exists, a type changed. It cannot detect a
+  column that was dropped and re-created with an *identical* definition but different data
+  between plan and apply: that is invisible to a schema diff. Treat a plan as short-lived,
+  and do not apply one across an interval in which the data under it may have been replaced.
 - **Confirmation tokens are in-memory**, so a restart invalidates outstanding approvals.
   That is the safe direction to fail.
 - **`container.exec` is a diagnostic convenience, not a sandbox.** Its command allowlist

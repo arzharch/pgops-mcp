@@ -69,6 +69,11 @@ class MigrationPlan:
     notes: list[str] = field(default_factory=list)
     dry_run_ok: bool | None = None
     atomic: bool = True
+    # The inputs that produced this plan, kept so `apply` can re-diff against the LIVE
+    # schema and detect that it moved since planning. Without them, apply can only re-hash
+    # its own cached steps — an integrity check against nothing.
+    target: dict[str, Any] = field(default_factory=dict)
+    allow_drops: bool = False
 
     @property
     def sql_steps(self) -> list[str]:
@@ -136,6 +141,8 @@ async def migration_plan(
         steps=steps,
         notes=list(changeset.notes),
         atomic=not non_transactional,
+        target=target,
+        allow_drops=allow_drops,
     )
 
     if non_transactional:
@@ -207,16 +214,17 @@ async def migration_apply(
     if not plan.steps:
         return {"applied": False, "reason": "nothing to do", "steps": 0}
 
-    # Re-plan and compare: the schema may have changed since the plan was made.
-    target_checksum = plan.checksum
-    fingerprint = checksum_steps(plan.sql_steps)
-    if fingerprint != target_checksum:  # defensive; plan is immutable in cache
-        raise PgopsError(ErrorCode.INTERNAL_ERROR, "plan checksum mismatch")
-
     pool = await conn_manager.readwrite_pool()
     async with pool.acquire() as conn:
         ledger = MigrationLedger(conn)
         await ledger.ensure_table()
+
+        # Idempotency comes before the drift check: re-applying a plan that already landed
+        # is a no-op, not "stale" — even though re-diffing would report drift, because the
+        # plan is what changed the schema in the first place.
+        already = await ledger.get_applied(plan_id)
+        if already:
+            return {"applied": False, "reason": "already applied", "plan_id": plan_id}
 
         stranded = await ledger.find_in_flight()
         if stranded:
@@ -231,9 +239,34 @@ async def migration_apply(
                 ),
             )
 
-        already = await ledger.get_applied(plan_id)
-        if already:
-            return {"applied": False, "reason": "already applied", "plan_id": plan_id}
+    # Re-plan against the LIVE schema and compare. A plan is a snapshot of a schema other
+    # people can change; executing a stale plan is how a migration tool drops a column
+    # someone else already replaced. The old code here re-hashed the cached plan's own
+    # steps against its own checksum, which can only ever match — it never touched the
+    # database, so the documented "the schema moved under you" refusal did not exist.
+    # This re-diffs the stored target against the current schema and refuses on a
+    # mismatch. It catches structural drift (a column you were adding now exists, a type
+    # changed); it cannot catch a column that was dropped and re-added with an identical
+    # definition but different data, because that is invisible to a schema diff — see the
+    # known-limits note in SECURITY.md.
+    try:
+        _, fresh_steps = await _build_plan(conn_manager, plan.target, plan.allow_drops)
+    except PgopsError:
+        raise
+    except Exception as exc:
+        raise PgopsError(
+            ErrorCode.MIGRATION_FAILED,
+            f"could not re-verify the plan against the current schema: {exc}",
+            hint="the schema may have changed; call migration.plan again",
+        ) from exc
+    if checksum_steps([s.change.sql for s in fresh_steps]) != plan.checksum:
+        raise PgopsError(
+            ErrorCode.MIGRATION_STALE,
+            "the database schema has changed since this plan was created; the plan no "
+            "longer matches what the migration would do now",
+            hint="another change landed between plan and apply. Call migration.plan again "
+            "to see the current diff, then apply the fresh plan.",
+        )
 
     # Confirmation gate — destructive steps or anything high-risk needs explicit sign-off.
     needs_confirmation = (
