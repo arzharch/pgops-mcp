@@ -9,6 +9,8 @@ scopes — not Python symbols.
 
 ## [Unreleased]
 
+## [0.1.3] — 2026-08-28
+
 Findings from auditing the published 0.1.2 artifact: a clean-room install from PyPI,
 driven against a four-container Compose stack under continuous write load. Ten defects,
 two of them security. If you are running 0.1.2, the two security items below apply to

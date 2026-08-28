@@ -1,4 +1,5 @@
 # pgops-mcp package.
-# Implementation starts at SPEC.md Phase 1 — this file intentionally near-empty.
+# Not an import surface: this is an MCP server, and `pgops.*` carries no API
+# stability promise. The public contract is the tool list in docs/API.md.
 
-__version__ = "0.1.2"
+__version__ = "0.1.3"
