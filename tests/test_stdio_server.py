@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -176,3 +177,32 @@ async def test_read_only_mode_hides_write_tool_over_the_wire(dsn: str, tmp_path:
         names = {t.name for t in await client.list_tools()}
     assert "query.write" not in names
     assert "query.read" in names
+
+
+def test_startup_writes_nothing_to_stdout_and_no_vendor_banner(tmp_path: Path, dsn: str) -> None:
+    """Under stdio, stdout is the JSON-RPC channel and stderr is the server's log.
+
+    Two separate properties. stdout must be empty or the transport is corrupt. stderr is
+    what a client surfaces to an operator as *this server's* log, and FastMCP's default
+    startup banner puts ASCII art and a link to an unrelated hosting product there.
+    """
+    env = {
+        **os.environ,
+        "PGOPS_DSN": dsn,
+        "PGOPS_AUDIT_LOG": str(tmp_path / "audit.jsonl"),
+    }
+    proc = subprocess.run(
+        [sys.executable, "-m", "pgops"],
+        input=b"",
+        capture_output=True,
+        env=env,
+        timeout=60,
+        # The server exits non-zero when stdin closes immediately; the streams are what
+        # this asserts on, not the exit code.
+        check=False,
+    )
+    assert proc.stdout == b"", f"stdio transport polluted stdout: {proc.stdout[:200]!r}"
+    stderr = proc.stderr.decode("utf-8", "replace").lower()
+    assert "prefect" not in stderr and "horizon" not in stderr, (
+        "a third-party product banner is being written to this server's log"
+    )

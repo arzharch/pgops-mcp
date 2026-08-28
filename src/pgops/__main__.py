@@ -744,12 +744,20 @@ def main() -> None:
             health_task = asyncio.create_task(run_health_endpoints(_readiness))
         try:
             mcp = build_server(config, conn_manager, auth=auth)
+            # show_banner=False: FastMCP's startup banner is ASCII art plus a link to a
+            # third-party hosting product. It goes to stderr, so it does not corrupt the
+            # stdio JSON-RPC stream — but under stdio, stderr is what a client surfaces
+            # as this server's log, and an unrelated vendor's promotion is not something
+            # pgops should be putting in an operator's logs. The version line it carried
+            # is available in the `initialize` handshake, where a client can act on it.
             if args.transport == "http":
                 logger = logging.getLogger("pgops")
                 logger.info("serving MCP over HTTP on %s:%s", args.host, args.port)
-                await mcp.run_async(transport="http", host=args.host, port=args.port)
+                await mcp.run_async(
+                    transport="http", host=args.host, port=args.port, show_banner=False
+                )
             else:
-                await mcp.run_async(transport="stdio")
+                await mcp.run_async(transport="stdio", show_banner=False)
         finally:
             if health_task is not None:
                 health_task.cancel()
