@@ -292,13 +292,28 @@ async def test_exec_refused_without_approval_mode(tmp_path: Path) -> None:
         ["psql", "-c", "CREATE TABLE pwned (x int)"],
         ["psql", "-c", r"\! id"],
         ["postgres", "--single"],
+        # `env` was allowlisted as a diagnostic and is the launcher pattern: a rogue
+        # agent ran `env sh -c 'id'` against the live 0.1.3 server and got uid=0(root),
+        # and bare `env` dumped POSTGRES_PASSWORD. argv[0] being allowlisted is not
+        # enough — an interpreter anywhere in the command is refused, so every one of
+        # these launcher forms is blocked even if argv[0] were allowlisted.
+        ["env", "sh", "-c", "id"],
+        ["env"],
+        ["env", "id"],
+        ["nice", "bash", "-c", "id"],
+        ["xargs", "sh"],
+        ["timeout", "5", "bash", "-c", "id"],
+        ["cat", "/etc/passwd", ";", "sh"],
+        ["ls", "-la", "&&", "bash"],
     ],
 )
 async def test_exec_allowlist_blocks_shells_and_downloads(
     tmp_path: Path, command: list[str]
 ) -> None:
     """Even behind two gates, an arbitrary shell is a different class of capability from
-    container diagnostics. `/bin/bash` is checked by basename so a path cannot slip past."""
+    container diagnostics. `/bin/bash` is checked by basename so a path cannot slip past,
+    and an interpreter named anywhere in the command — not just argv[0] — is refused, so
+    an allowlisted binary cannot be used to launch one."""
     audit = AuditLog(tmp_path / "audit.jsonl")
     with pytest.raises(PgopsError) as exc_info:
         await container_exec(

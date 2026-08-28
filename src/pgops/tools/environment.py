@@ -80,7 +80,6 @@ _EXEC_ALLOWLIST = {
     "uptime",
     "cat",
     "ls",
-    "env",
     "netstat",
     "ss",
     "pg_isready",
@@ -89,6 +88,28 @@ _EXEC_ALLOWLIST = {
     "hostname",
     "date",
 }
+
+# `env` was allowlisted and is gone for two reasons, both found by a rogue write/admin
+# agent against the live 0.1.3 server:
+#
+#   env sh -c 'id'   ->  uid=0(root)          `env CMD` is a program launcher, so an
+#                                              allowlist that checks only argv[0] hands
+#                                              back exactly the arbitrary root shell the
+#                                              list exists to withhold — the same class
+#                                              as the psql `\!` escape removed earlier.
+#   env              ->  POSTGRES_PASSWORD=…   dumping the environment leaks the database
+#                                              password the container was started with.
+#
+# Removing it closes this instance. The guard below closes the *class*: an allowlisted
+# binary used to launch an interpreter.
+_INTERPRETER_NAMES = frozenset(
+    {
+        "sh", "bash", "dash", "zsh", "ash", "ksh", "csh", "tcsh", "fish",
+        "env", "xargs", "find", "nohup", "timeout", "nice", "stdbuf", "setsid",
+        "python", "python2", "python3", "perl", "ruby", "node", "php", "lua",
+        "awk", "gawk", "sed", "psql", "postgres", "expect", "socat", "nc", "ncat",
+    }
+)
 
 
 def _docker_module() -> Any:
@@ -541,6 +562,24 @@ async def container_exec(
                 "container diagnostics, and an operator who needs one already has docker exec"
             ),
         )
+
+    # Defence in depth against the launcher pattern. argv[0] being allowlisted is not
+    # enough: `env sh -c …`, `nice bash …`, `xargs sh` and friends all pass the check
+    # above and then run an interpreter. Rather than trust that the allowlist will only
+    # ever contain non-launchers, reject an interpreter appearing ANYWHERE in the
+    # command. A diagnostic like `ls` or `cat` has no legitimate reason to name a shell
+    # as an argument; the rare `ls /bin/sh` false positive is worth refusing to keep this
+    # class closed for good.
+    for arg in command:
+        if arg.rsplit("/", 1)[-1] in _INTERPRETER_NAMES:
+            raise PgopsError(
+                ErrorCode.EXEC_NOT_ALLOWED,
+                f"{arg!r} names an interpreter; container.exec runs single diagnostic "
+                "commands, not a shell or a program launcher",
+                hint="an allowlisted command may not be used to launch sh/bash/env/find "
+                "or any other interpreter — that is arbitrary code execution by another "
+                "name. Use docker exec directly if you genuinely need a shell.",
+            )
 
     subject = f"container.exec:{name}:{' '.join(command)}"
     if confirm_token is None:
