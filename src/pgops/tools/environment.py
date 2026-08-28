@@ -34,7 +34,7 @@ import asyncio
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal, get_args
 from urllib.parse import urlparse
 
 from pgops.audit import AuditEntry, AuditLog
@@ -45,7 +45,11 @@ from pgops.guardrails import ConfirmationTokenStore
 logger = logging.getLogger("pgops.environment")
 
 # Postgres severities, weakest to strongest. Used for log filtering.
-_SEVERITY_ORDER = ["DEBUG", "INFO", "NOTICE", "LOG", "WARNING", "ERROR", "FATAL", "PANIC"]
+# Postgres severity levels, ascending. Exported as a Literal (below) so the accepted
+# values reach clients in the tool's input schema rather than only in an error message
+# after a wrong guess.
+Severity = Literal["DEBUG", "INFO", "NOTICE", "LOG", "WARNING", "ERROR", "FATAL", "PANIC"]
+_SEVERITY_ORDER: list[str] = list(get_args(Severity))
 _SEVERITY_RE = re.compile(
     r"\b(DEBUG[1-5]?|INFO|NOTICE|LOG|WARNING|ERROR|FATAL|PANIC)\b:", re.IGNORECASE
 )

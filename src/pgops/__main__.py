@@ -54,6 +54,7 @@ from pgops.resources import (
 )
 from pgops.tools.advisor import index_advise
 from pgops.tools.environment import (
+    Severity,
     container_exec,
     container_logs,
     container_restart,
@@ -392,7 +393,7 @@ def build_server(config: PgopsConfig, conn_manager: ConnectionManager, auth: Any
     async def container_logs_tool(
         name: str,
         tail: int = 100,
-        min_severity: str | None = None,
+        min_severity: Severity | None = None,
         since_seconds: int | None = None,
     ) -> dict[str, Any]:
         """Tail a container's logs, optionally filtered to a minimum Postgres severity
