@@ -102,8 +102,9 @@ def classify(sql: str) -> Classification:
     if write_hit:
         return Classification(StatementClass.WRITE, leading, "contains INSERT/UPDATE/DELETE")
 
-    if _is_drop_column(tokens):
-        return Classification(StatementClass.DESTRUCTIVE, leading, "ALTER ... DROP COLUMN")
+    destructive_alter = _destructive_alter_action(tokens)
+    if destructive_alter is not None:
+        return Classification(StatementClass.DESTRUCTIVE, leading, f"ALTER ... {destructive_alter}")
 
     if leading in _DESTRUCTIVE_LEADING:
         return Classification(StatementClass.DESTRUCTIVE, leading, f"{leading} statement")
@@ -131,10 +132,41 @@ def _leading_keyword(tokens: list[Token]) -> str:
     return word
 
 
-def _is_drop_column(tokens: list[Token]) -> bool:
-    for i, tok in enumerate(tokens[:-1]):
-        if tok.ttype in T.Keyword and tok.normalized.upper() == "DROP":
-            nxt = tokens[i + 1]
-            if nxt.ttype in T.Keyword and nxt.normalized.upper() == "COLUMN":
-                return True
-    return False
+# ALTER subcommands that remove a guarantee rather than add one. `ALTER TABLE` alone is
+# ordinary DDL (add a column, set a default) and does not gate; these do, because each
+# quietly weakens the database's own protections and every one was reached by a rogue
+# write-token agent in testing:
+#
+#   DROP CONSTRAINT   removes a PK/FK/UNIQUE/CHECK — an integrity guarantee, and not
+#                     cleanly reversible (re-adding fails if data now violates it).
+#   DROP COLUMN       destroys the column's data.
+#   DISABLE TRIGGER   turns off enforcement or audit triggers — the classic first move
+#                     for defeating protections before mutating underneath them.
+#   DISABLE ROW LEVEL SECURITY / NO FORCE ROW LEVEL SECURITY
+#                     removes row-level access control wholesale.
+#
+# Detected as keyword sequences in the flattened token stream, so whitespace and the
+# `IF EXISTS` between DROP and its object do not matter. Matching by StatementClass and
+# routing through the same DESTRUCTIVE gate as DROP TABLE means these now require a
+# confirmation token like every other guarantee-removing statement.
+_DESTRUCTIVE_ALTER_SEQUENCES: tuple[tuple[str, ...], ...] = (
+    ("DROP", "COLUMN"),
+    ("DROP", "CONSTRAINT"),
+    ("DISABLE", "TRIGGER"),
+    ("DISABLE", "ROW", "LEVEL", "SECURITY"),
+    ("NO", "FORCE", "ROW", "LEVEL", "SECURITY"),
+)
+
+
+def _destructive_alter_action(tokens: list[Token]) -> str | None:
+    """Return the destructive ALTER subcommand present, or None.
+
+    Only the keyword tokens are compared, so `DROP CONSTRAINT` matches whether or not an
+    `IF EXISTS` sits between them, and casing is irrelevant.
+    """
+    keywords = [t.normalized.upper() for t in tokens if t.ttype in T.Keyword]
+    for seq in _DESTRUCTIVE_ALTER_SEQUENCES:
+        for i in range(len(keywords) - len(seq) + 1):
+            if tuple(keywords[i : i + len(seq)]) == seq:
+                return " ".join(seq)
+    return None

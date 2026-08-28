@@ -69,7 +69,17 @@ def test_insert_needs_no_where_clause() -> None:
 
 @pytest.mark.parametrize(
     "sql",
-    ["DROP TABLE orders", "TRUNCATE orders", "ALTER TABLE orders DROP COLUMN status"],
+    [
+        "DROP TABLE orders",
+        "TRUNCATE orders",
+        "ALTER TABLE orders DROP COLUMN status",
+        # Guarantee-removing ALTER subcommands. A write-token agent ran the first two
+        # unconfirmed against the live server before these gated: it dropped a primary
+        # key and disabled all triggers on the credentials table.
+        "ALTER TABLE api_keys DROP CONSTRAINT api_keys_pkey",
+        "ALTER TABLE api_keys DISABLE TRIGGER ALL",
+        "ALTER TABLE orders DISABLE ROW LEVEL SECURITY",
+    ],
 )
 def test_destructive_statements_blocked(sql: str) -> None:
     verdict = evaluate(classify(sql), sql)

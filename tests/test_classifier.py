@@ -35,6 +35,16 @@ CASES: list[tuple[str, StatementClass]] = [
     ("DROP INDEX idx_orders_customer_id", StatementClass.DESTRUCTIVE),
     ("TRUNCATE orders", StatementClass.DESTRUCTIVE),
     ("ALTER TABLE orders DROP COLUMN status", StatementClass.DESTRUCTIVE),
+    # ALTER subcommands that remove a guarantee. A rogue write-token agent dropped a
+    # table's primary key and disabled its triggers with these, unconfirmed, because they
+    # classified as plain DDL — found against the live 0.1.3 server.
+    ("ALTER TABLE api_keys DROP CONSTRAINT IF EXISTS api_keys_pkey", StatementClass.DESTRUCTIVE),
+    ("ALTER TABLE api_keys DISABLE TRIGGER ALL", StatementClass.DESTRUCTIVE),
+    ("ALTER TABLE orders DISABLE ROW LEVEL SECURITY", StatementClass.DESTRUCTIVE),
+    ("ALTER TABLE orders NO FORCE ROW LEVEL SECURITY", StatementClass.DESTRUCTIVE),
+    # …but re-enabling a protection, or an ordinary column add, is not destructive.
+    ("ALTER TABLE orders ENABLE TRIGGER ALL", StatementClass.DDL),
+    ("ALTER TABLE orders ALTER COLUMN status SET DEFAULT 'new'", StatementClass.DDL),
     ("SELECT 1; SELECT 2", StatementClass.UNKNOWN),
     ("SELECT 1; DROP TABLE orders", StatementClass.UNKNOWN),
     ("DO $$ BEGIN NULL; END $$", StatementClass.UNKNOWN),
