@@ -9,6 +9,43 @@ scopes — not Python symbols.
 
 ## [Unreleased]
 
+## [0.1.4] — 2026-08-28
+
+Findings from a rogue-agent exercise against the published 0.1.3 artifact: six adversarial
+agents (on a small, fast model) drove the live server over authenticated HTTP at three
+scope tiers, each trying to make it do something it forbids. The scope, migration-injection,
+resource, and rate-limit defenses held. Three gaps did not, two of them security.
+
+### Security
+- **`container.exec` could be turned into a root shell via `env`.** `env` was allowlisted
+  as a diagnostic, but `env sh -c '<cmd>'` is a program launcher — an allowlist that
+  checks only the first argument handed back exactly the arbitrary shell it exists to
+  withhold (`env sh -c 'id'` returned `uid=0(root)`), and bare `env` dumped the
+  container's environment including `POSTGRES_PASSWORD`. `env` is removed, and an
+  interpreter (sh, bash, env, find, xargs, nice, timeout, python, …) named anywhere in
+  the command — not just as argv[0] — is now refused, so no allowlisted binary can launch
+  one. Same class as the psql escape closed in 0.1.3.
+- **Guarantee-removing `ALTER` subcommands executed without confirmation.** `DROP TABLE`,
+  `TRUNCATE` and unbounded `DELETE`/`UPDATE` were gated, but `ALTER TABLE … DROP
+  CONSTRAINT`, `… DISABLE TRIGGER`, and `… DISABLE ROW LEVEL SECURITY` classified as
+  ordinary DDL and ran on a write token with no confirmation step — a rogue agent dropped
+  a table's primary key and disabled its triggers unprompted. These now classify as
+  destructive and require a confirmation token like every other guarantee-removing
+  statement; re-enabling a protection (`ENABLE TRIGGER`) is still free.
+
+### Fixed
+- **Table and column names in a migration target could carry statement separators.** They
+  are always quoted, so they never injected — but a rogue agent used names like
+  `"orders; DROP TABLE api_keys; --"` to litter the catalog, while every other field of a
+  target spec already refused a separator. Identifiers are now held to the same rule.
+
+### Notes
+- The exercise also confirmed a **deployment boundary, not a bug**: a `pgops:read` token
+  can read any table the *database role* can read, secrets included — pgops gates tools,
+  not tables. Connect with a least-privilege role; see SECURITY.md. This was always the
+  design; it is now stated more sharply.
+
+
 ## [0.1.3] — 2026-08-28
 
 Findings from auditing the published 0.1.2 artifact: a clean-room install from PyPI,
