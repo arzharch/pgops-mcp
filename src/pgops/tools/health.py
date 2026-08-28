@@ -16,12 +16,29 @@ from pgops.serialize import serialize_record, serialize_value
 
 Severity = Literal["ok", "info", "warning", "critical"]
 
+# `backend_type = 'client backend'` is the important clause. Without it this counts the
+# checkpointer, the walwriter, the background writer, the autovacuum launcher and the
+# logical replication launcher — none of which are connections, none of which consume a
+# max_connections slot, and all of which report a NULL state. On an idle Postgres 16
+# that produced "5 active backend connection(s)" with every one of them bucketed as
+# "unknown", when exactly one client was attached.
+#
+# pgops's own backend is deliberately *not* excluded. The question this finding answers
+# is how much max_connections headroom is left, and the observing connection occupies a
+# slot like any other; filtering it out reported "0 client connections" from a session
+# that was itself connected.
 _CONNECTIONS_SQL = """
-SELECT state, count(*) AS n
+SELECT coalesce(state, 'unknown') AS state, count(*) AS n
 FROM pg_stat_activity
-WHERE pid <> pg_backend_pid()
-GROUP BY state
+WHERE backend_type = 'client backend'
+GROUP BY 1
 """
+
+# Connection exhaustion is an outage, and it arrives without warning: everything is fine
+# until max_connections is reached and then nothing can connect at all — including the
+# session an operator would use to investigate. Reporting the count alone leaves the
+# reader to find the ceiling themselves, so the finding carries the headroom.
+_MAX_CONNECTIONS_SQL = "SELECT setting::int FROM pg_settings WHERE name = 'max_connections'"
 
 _CACHE_HIT_SQL = """
 SELECT
@@ -40,16 +57,40 @@ LIMIT 10
 
 # Table bloat estimate. There is no exact bloat figure available without scanning every
 # page (pgstattuple does that, but it is an extension and it is expensive on a large
-# table). This compares the live tuple count × average row width against the actual
-# relation size — the standard cheap approximation, accurate enough to rank tables and
-# explicitly labelled an estimate in the output.
-_BLOAT_SQL = """
+# table), so this compares an estimate of the space live rows *should* occupy against
+# the actual relation size.
+#
+# Getting that estimate right requires counting what a row costs on disk, not just what
+# its data costs. An earlier version used `reltuples × sum(avg_width)` alone and was
+# wrong on every narrow table, always in the alarming direction. Measured against a
+# freshly loaded, never-updated table of 600k rows:
+#
+#     pgstattuple: dead_tuple_percent 0.00, free_percent 0.05   <- zero bloat
+#     this tool:   "critical: order_items is roughly 55% bloat"
+#
+# sum(avg_width) for that table is 29 bytes; the real per-row cost is 52. Postgres adds
+# a 23-byte tuple header MAXALIGNed to 24, plus a 4-byte line pointer in the page, and
+# every page spends 24 bytes on its own header. Omitting all three understates live
+# bytes by roughly 45% on narrow rows and reports the entire shortfall as reclaimable
+# space — which pushes an agent toward VACUUM FULL, an AccessExclusiveLock that rewrites
+# the table, on a table with nothing to reclaim.
+#
+# What remains unmodelled is per-column alignment padding, which avg_width cannot see.
+# That errs toward *under*-reporting bloat, which is the right direction for a finding
+# whose suggested remedy takes an exclusive lock.
+_TUPLE_OVERHEAD_BYTES = 28  # 24-byte MAXALIGNed header + 4-byte line pointer
+_PAGE_USABLE_BYTES = 8192 - 24  # page size less its header
+
+_BLOAT_SQL = f"""
 SELECT
     c.relname AS table_name,
     pg_relation_size(c.oid) AS actual_bytes,
-    (c.reltuples * (SELECT sum(avg_width) FROM pg_stats s
-                    WHERE s.schemaname = 'public' AND s.tablename = c.relname))::bigint
-        AS estimated_live_bytes
+    (ceil(
+        (c.reltuples * ((SELECT sum(avg_width) FROM pg_stats s
+                         WHERE s.schemaname = 'public' AND s.tablename = c.relname)
+                        + {_TUPLE_OVERHEAD_BYTES}))
+        / {_PAGE_USABLE_BYTES}::float8
+     ) * 8192)::bigint AS estimated_live_bytes
 FROM pg_class c
 JOIN pg_namespace n ON n.oid = c.relnamespace
 WHERE c.relkind = 'r'
@@ -115,10 +156,28 @@ async def db_health(conn_manager: ConnectionManager) -> HealthReport:
     findings: list[Finding] = []
     async with conn_manager.acquire_readonly() as conn:
         conn_rows = await conn.fetch(_CONNECTIONS_SQL)
-        by_state = {r["state"] or "unknown": r["n"] for r in conn_rows}
+        by_state = {r["state"]: r["n"] for r in conn_rows}
         total = sum(by_state.values())
+        max_conns = await conn.fetchval(_MAX_CONNECTIONS_SQL)
+        used_pct = total / max_conns if max_conns else 0.0
+        conn_severity: Severity = (
+            "critical" if used_pct >= 0.90 else ("warning" if used_pct >= 0.75 else "info")
+        )
         findings.append(
-            Finding("connections", "info", f"{total} active backend connection(s)", by_state)
+            Finding(
+                "connections",
+                conn_severity,
+                f"{total} client connection(s) of {max_conns} max ({used_pct:.0%} used)",
+                {
+                    "by_state": by_state,
+                    "total": total,
+                    "max_connections": max_conns,
+                    "used_pct": round(used_pct * 100, 1),
+                    "note": "background workers excluded (they consume no "
+                    "max_connections slot); pgops's own pool connections are "
+                    "included, because they do",
+                },
+            )
         )
 
         ratio = await conn.fetchval(_CACHE_HIT_SQL)
@@ -174,8 +233,10 @@ async def db_health(conn_manager: ConnectionManager) -> HealthReport:
                         "actual_bytes": actual,
                         "estimated_live_bytes": live,
                         "estimated_waste_pct": round(waste_pct * 100, 1),
-                        "note": "estimated from reltuples × avg row width; confirm with "
-                        "pgstattuple before acting",
+                        "note": "estimated from reltuples × (avg row width + tuple "
+                        "overhead), rounded up to whole pages; per-column alignment "
+                        "padding is not modelled, so this reads low rather than high. "
+                        "Confirm with pgstattuple before taking an exclusive lock.",
                     },
                 )
             )
