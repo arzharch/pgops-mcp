@@ -74,6 +74,15 @@ you.
 - **`docs/API.md` no longer labels tools with internal phase numbers.** "Phase 4 ✅
   implemented" is development bookkeeping; every tool in the reference is implemented.
 
+- **A migration interrupted by connection loss now returns an actionable error.** When
+  the database went away mid-apply — a restart, a killed container, a dropped network —
+  the driver raises `InterfaceError`, which is not an `asyncpg.PostgresError` and so
+  escaped the failure handler. The caller received `INTERNAL_ERROR: internal error; see
+  server logs` at the exact moment it most needed detail: the ledger row is left
+  `in_flight` and every later migration refuses, but nothing said so. The new
+  `MIGRATION_INTERRUPTED` error reports how many steps had completed, that the row stays
+  in_flight, and the `migration.resolve` call that clears it.
+
 ### Added
 - **`migration.resolve(ledger_id, outcome, note)`** closes an interrupted migration. A
   crash between recording intent and recording the result leaves a row `in_flight`, and

@@ -6,6 +6,7 @@ not of our code — asserting them against a mock would prove nothing at all.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import asyncpg
@@ -17,7 +18,12 @@ from pgops.connections import ConnectionManager
 from pgops.errors import ErrorCode, PgopsError
 from pgops.guardrails import ConfirmationTokenStore
 from pgops.migrations.ledger import LEDGER_TABLE, MigrationLedger, checksum_steps
-from pgops.tools.migrations import migration_apply, migration_history, migration_plan
+from pgops.tools.migrations import (
+    migration_apply,
+    migration_history,
+    migration_plan,
+    migration_resolve,
+)
 
 
 async def _columns(dsn: str, table: str) -> set[str]:
@@ -358,3 +364,73 @@ async def test_ledger_allows_retry_after_failure_but_not_double_apply(
             await ledger.finish(third, 1.0)
 
         await conn.execute(f"DELETE FROM {LEDGER_TABLE} WHERE migration_id = 'retry-me'")
+
+
+def test_asyncpg_interface_error_is_not_a_postgres_error() -> None:
+    """The root cause of the interrupted-migration bug, stated as an assertion.
+
+    `_execute_plan` caught `asyncpg.PostgresError`, which covers errors Postgres *sends*.
+    A lost connection is raised by the driver instead, and `InterfaceError` shares no
+    ancestor with `PostgresError` — so the handler never saw it and the caller got
+    `INTERNAL_ERROR: internal error; see server logs`.
+    """
+    assert not issubclass(asyncpg.InterfaceError, asyncpg.PostgresError)
+
+
+async def test_connection_lost_mid_apply_tells_the_caller_how_to_recover(
+    conn_manager: ConnectionManager,
+    config: PgopsConfig,
+    audit: AuditLog,
+    tokens: ConfirmationTokenStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A migration interrupted by connection loss must return a usable error.
+
+    Reproduced against a live stack by SIGKILLing Postgres mid-index-build: the ledger
+    correctly recorded `in_flight` and every later apply refused, but the agent holding
+    the failure was told only "internal error; see server logs" — not that a migration
+    was half-applied, not that further applies would refuse, not that migration.resolve
+    is how it ends. Under stdio the human usually cannot read that log either.
+
+    The exception is injected rather than provoked so the test is deterministic; it is
+    the exact type and message asyncpg raises when the socket dies under an open
+    transaction.
+    """
+    plan = await migration_plan(
+        conn_manager, config, {"tables": {"items": {"columns": {"lost": {"type": "text"}}}}}
+    )
+    real_execute = asyncpg.Connection.execute
+
+    async def die_on_the_migration(self: Any, query: str, *args: Any, **kwargs: Any) -> Any:
+        if "lost" in query and "ALTER TABLE" in query:
+            raise asyncpg.InterfaceError(
+                "cannot call Transaction.__aexit__(): the underlying connection is closed"
+            )
+        return await real_execute(self, query, *args, **kwargs)
+
+    monkeypatch.setattr(asyncpg.Connection, "execute", die_on_the_migration)
+    with pytest.raises(PgopsError) as exc:
+        await migration_apply(conn_manager, config, audit, tokens, plan.plan_id, name="lossy")
+    monkeypatch.undo()
+
+    assert exc.value.code is ErrorCode.MIGRATION_INTERRUPTED
+    assert "connection was lost" in exc.value.message
+    hint = exc.value.hint or ""
+    assert "migration.resolve" in hint, "the error must name the way out"
+    assert "in_flight" in hint
+
+    # The row it points at must actually be there, and the id in the hint must be real.
+    ledger_id = int(re.search(r"ledger_id=(\d+)", hint).group(1))  # type: ignore[union-attr]
+    history = await migration_history(conn_manager, limit=10)
+    stranded = {e["ledger_id"]: e for e in history["in_flight"]}
+    assert ledger_id in stranded, f"hint names ledger_id={ledger_id}, in_flight={list(stranded)}"
+    assert stranded[ledger_id]["status"] == "in_flight"
+
+    # And it is resolvable, so the tool is not left wedged.
+    with pytest.raises(PgopsError) as needs_token:
+        await migration_resolve(conn_manager, audit, tokens, ledger_id, "failed", "column absent")
+    token = (needs_token.value.hint or "").split("confirm_token=")[1].strip("'")
+    result = await migration_resolve(
+        conn_manager, audit, tokens, ledger_id, "failed", "column absent", confirm_token=token
+    )
+    assert result["resolved"] is True

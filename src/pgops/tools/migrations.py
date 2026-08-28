@@ -335,6 +335,45 @@ async def _execute_plan(
             for step in concurrent:
                 await conn.execute(step.change.sql)
                 completed.append(step.change.sql)
+        except (asyncpg.InterfaceError, ConnectionError, OSError) as exc:
+            # The connection died mid-apply — the database restarted, the container was
+            # killed, the network dropped. This is NOT asyncpg.PostgresError: an
+            # InterfaceError is raised by the driver, not by Postgres, so it used to fall
+            # through to the generic handler and reach the caller as
+            # `INTERNAL_ERROR: internal error; see server logs`.
+            #
+            # That is the worst possible moment for an opaque error. The ledger row is
+            # correctly left `in_flight` and the machinery to recover exists, but the
+            # agent is the one holding the failure and it has just been told nothing —
+            # not that a migration is half-applied, not that further applies will refuse,
+            # not that migration.resolve is how it ends. Under stdio the human usually
+            # cannot read the server log either.
+            #
+            # No ledger write is attempted: the connection carrying it is the one that
+            # died, so that write would fail too and mask this error with a second one.
+            # `in_flight` is the honest record of what happened, and it is already there.
+            audit.record(
+                AuditEntry(
+                    tool="migration.apply",
+                    sql="; ".join(plan.sql_steps),
+                    verdict="interrupted",
+                    classification="migration",
+                    error_code=ErrorCode.MIGRATION_INTERRUPTED.value,
+                    detail=f"{exc}; {len(completed)} step(s) completed before the "
+                    f"connection was lost",
+                )
+            )
+            raise PgopsError(
+                ErrorCode.MIGRATION_INTERRUPTED,
+                f"the database connection was lost while applying {name!r} "
+                f"({len(completed)} of {len(plan.steps)} step(s) had completed): {exc}",
+                hint=(
+                    f"pgops cannot tell whether the work committed, so ledger row "
+                    f"{row_id} stays in_flight and further migrations will refuse. "
+                    f"Inspect the schema with schema.inspect, then close it with "
+                    f"migration.resolve(ledger_id={row_id}, outcome, note)."
+                ),
+            ) from exc
         except asyncpg.PostgresError as exc:
             await ledger.fail(row_id, str(exc))
             audit.record(
