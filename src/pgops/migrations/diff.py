@@ -158,6 +158,27 @@ def _quote_ident(name: str) -> str:
     return f'"{escaped}"'
 
 
+def _reject_smuggled_identifier(kind: str, name: str) -> None:
+    """Refuse a table or column name that carries a statement separator or a comment.
+
+    Identifiers are always double-quoted before interpolation, so a name like
+    "orders; DROP TABLE api_keys; --" cannot inject — it becomes one table whose name is
+    that whole string. But a rogue agent used exactly that to litter the catalog with
+    tables named after DROP statements, and the inconsistency is the real defect: every
+    other field of a target spec refuses a statement separator, while the identifier that
+    names the object accepted one. A name is never legitimately a statement.
+    """
+    if not isinstance(name, str) or not name.strip():
+        raise PgopsError(ErrorCode.INVALID_ARGUMENT, f"{kind} must be a non-empty string")
+    if ";" in name or "--" in name or "/*" in name or any(c in name for c in "\r\n\x00"):
+        raise PgopsError(
+            ErrorCode.INVALID_ARGUMENT,
+            f"{kind} {name!r} contains a statement separator, comment, or control character",
+            hint="table and column names are quoted before use, so this cannot inject — "
+            "but a name is never a statement, and accepting one only pollutes the catalog",
+        )
+
+
 def _reject_smuggled_sql(field: str, text: str) -> None:
     """Refuse a target-schema fragment that is more than one SQL expression.
 
@@ -223,6 +244,7 @@ def _validate_target(target: dict[str, Any]) -> None:
             hint="v1 handles tables/columns/indexes/constraints only",
         )
     for table_name, spec in target["tables"].items():
+        _reject_smuggled_identifier("table name", table_name)
         extra = set(spec) - _KNOWN_TABLE_KEYS
         if extra:
             raise PgopsError(
@@ -231,6 +253,7 @@ def _validate_target(target: dict[str, Any]) -> None:
                 hint=f"supported: {sorted(_KNOWN_TABLE_KEYS)}",
             )
         for col_name, col in spec.get("columns", {}).items():
+            _reject_smuggled_identifier(f"column name in {table_name!r}", col_name)
             if not isinstance(col, dict) or "type" not in col:
                 raise PgopsError(
                     ErrorCode.INVALID_ARGUMENT,

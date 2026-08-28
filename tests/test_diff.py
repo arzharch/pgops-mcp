@@ -283,3 +283,20 @@ def test_unsupported_column_key_names_the_supported_ones() -> None:
         diff_schema(LIVE, target)
     assert exc.value.hint is not None
     assert "constraints" in exc.value.hint
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        {"tables": {"orders; DROP TABLE api_keys; --": {"columns": {"id": {"type": "int"}}}}},
+        {"tables": {"users -- DROP TABLE api_keys": {"columns": {"id": {"type": "int"}}}}},
+        {"tables": {"t": {"columns": {"id); DROP TABLE api_keys; --": {"type": "int"}}}}},
+    ],
+)
+def test_identifier_carrying_a_statement_is_refused(target: dict[str, object]) -> None:
+    """Table and column names are quoted, so they cannot inject — but a rogue agent used
+    exactly these to litter the catalog with tables named after DROP statements. Every
+    other target field refuses a statement separator; the identifier must too."""
+    with pytest.raises(PgopsError) as exc:
+        diff_schema(LIVE, target)
+    assert exc.value.code is ErrorCode.INVALID_ARGUMENT
