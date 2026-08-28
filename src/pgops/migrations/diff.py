@@ -513,3 +513,83 @@ def _normalize_type(type_name: str) -> str:
 
 def _types_match(live_type: str, target_type: str) -> bool:
     return _normalize_type(live_type) == _normalize_type(target_type)
+
+
+# The JSON Schema for `target`, published to MCP clients as migration.plan's parameter
+# schema.
+#
+# It exists because the parameter was typed `dict[str, Any]`, which reaches the client as
+# `{"type": "object", "additionalProperties": true}` — the flagship tool of this server
+# telling the model, in the one place the model is guaranteed to read, that any object
+# will do. The shape was documented only in prose in the description, so a client had to
+# infer the grammar and find out it was wrong from an error. Observed first-guess
+# failures: `{"primary_key": true}` on a column, and `{"columns": [...]}` as an index
+# definition.
+#
+# Kept beside _validate_target deliberately: this schema and that function describe the
+# same grammar, and separating them is how they drift.
+TARGET_JSON_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "description": (
+        "The desired end state of the schema, not a list of changes — the diff is "
+        "computed. Anything not mentioned is left alone."
+    ),
+    "properties": {
+        "tables": {
+            "type": "object",
+            "description": "Keyed by table name.",
+            "additionalProperties": {
+                "type": "object",
+                "properties": {
+                    "columns": {
+                        "type": "object",
+                        "description": "Keyed by column name.",
+                        "additionalProperties": {
+                            "type": "object",
+                            "properties": {
+                                "type": {
+                                    "type": "string",
+                                    "description": "Postgres type, e.g. 'text', "
+                                    "'bigint', 'numeric(14,2)', 'timestamptz'.",
+                                },
+                                "nullable": {"type": "boolean", "default": True},
+                                "default": {
+                                    "type": "string",
+                                    "description": "SQL expression for the DEFAULT, "
+                                    "e.g. '0' or \"'pending'\" or 'now()'. A constant "
+                                    "default is a catalog change; a volatile one "
+                                    "rewrites the table.",
+                                },
+                            },
+                            "required": ["type"],
+                            "additionalProperties": False,
+                        },
+                    },
+                    "constraints": {
+                        "type": "object",
+                        "description": "Keyed by constraint name; the value is the "
+                        "definition, e.g. 'PRIMARY KEY (id)', 'UNIQUE (email)', "
+                        "'CHECK (qty > 0)', 'FOREIGN KEY (order_id) REFERENCES "
+                        "orders(id)'. Primary and foreign keys go here, not on the "
+                        "column.",
+                        "additionalProperties": {"type": "string"},
+                    },
+                    "indexes": {
+                        "type": "object",
+                        "description": "Keyed by index name; the value is the column "
+                        "list.",
+                        "additionalProperties": {
+                            "anyOf": [
+                                {"type": "string"},
+                                {"type": "array", "items": {"type": "string"}},
+                            ]
+                        },
+                    },
+                },
+                "additionalProperties": False,
+            },
+        }
+    },
+    "required": ["tables"],
+    "additionalProperties": False,
+}

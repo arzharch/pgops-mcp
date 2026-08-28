@@ -7,9 +7,10 @@ import asyncio
 import logging
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 from fastmcp import Context, FastMCP
+from pydantic import Field
 
 from pgops import __version__
 from pgops.audit import AuditLog
@@ -31,6 +32,7 @@ from pgops.middleware import (
     ScopeEnforcement,
     ToolCallRateLimit,
 )
+from pgops.migrations.diff import TARGET_JSON_SCHEMA
 from pgops.migrations.rollback import rollback_migration
 from pgops.observability import init_observability, run_health_endpoints
 from pgops.prompts import (
@@ -71,6 +73,16 @@ from pgops.tools.migrations import (
 from pgops.tools.query import query_read
 from pgops.tools.schema import Level, schema_inspect
 from pgops.tools.write import query_write
+
+# Annotated + json_schema_extra rather than a pydantic model: table, column, index and
+# constraint names are arbitrary, so the schema is keyed by additionalProperties all the
+# way down, which a model class cannot express.
+#
+# Module level, not inside build_server: `from __future__ import annotations` makes every
+# annotation a string, and pydantic resolves those against module globals. Defined in the
+# enclosing function it raised `NameError: name 'TargetSchema' is not defined` at tool
+# registration, which takes the whole server down at startup.
+TargetSchema = Annotated[dict[str, Any], Field(json_schema_extra=TARGET_JSON_SCHEMA)]
 
 
 def configure_logging(level: int = logging.INFO) -> None:
@@ -226,12 +238,25 @@ def build_server(config: PgopsConfig, conn_manager: ConnectionManager, auth: Any
     @mcp.tool(name="migration.plan")
     @tool_boundary
     async def migration_plan_tool(
-        target: dict[str, Any], allow_drops: bool = False, dry_run: bool = True
+        target: TargetSchema, allow_drops: bool = False, dry_run: bool = True
     ) -> dict[str, Any]:
         """Plan a migration from a target schema. Executes nothing.
 
-        `target` describes the desired state, e.g.
-        {"tables": {"orders": {"columns": {"note": {"type": "text"}}}}}.
+        `target` is the desired state, not a list of changes — pgops computes the diff.
+        The whole grammar:
+
+            {"tables": {"<table>": {
+                "columns":     {"<col>":  {"type": "text",
+                                           "nullable": false,      # optional
+                                           "default": "0"}},       # optional, SQL text
+                "constraints": {"<name>": "PRIMARY KEY (id)"},     # any table constraint
+                "indexes":     {"<name>": ["col_a", "col_b"]}      # or a single string
+            }}}
+
+        A primary key, unique or foreign key goes in `constraints` — there is no
+        column-level `primary_key` key. Each field is one SQL expression; a fragment
+        carrying a second statement or a comment is refused.
+
         Returns ordered steps, each annotated with lock impact, an estimated duration
         with confidence, and a safer alternative where one exists. Tables or columns
         absent from the target are left alone unless allow_drops=true.

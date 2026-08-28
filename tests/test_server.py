@@ -108,3 +108,37 @@ async def test_confirmation_flow_end_to_end_through_mcp(
     assert executed.structured_content is not None
     assert executed.structured_content["rows_affected"] == 250
     json.dumps(executed.structured_content)
+
+
+async def test_migration_plan_publishes_the_target_grammar(
+    conn_manager: ConnectionManager, config: PgopsConfig
+) -> None:
+    """`target` used to reach clients as `{"type": "object", "additionalProperties": true}`.
+
+    An MCP client feeds the input schema to the model, so the flagship tool of this
+    server was saying "any object will do" in the one place the model is guaranteed to
+    read. The grammar lived in prose in the description, and observed first guesses got
+    it wrong in both of the ways prose invites: `{"primary_key": true}` on a column,
+    and `{"columns": [...]}` as an index definition.
+
+    This also guards the startup failure that adding the schema caused. `TargetSchema`
+    was first defined inside build_server, and because `from __future__ import
+    annotations` turns every annotation into a string that pydantic resolves against
+    module globals, registration raised `NameError: name 'TargetSchema' is not defined`
+    — taking the whole server down at boot. Any test that merely imports the module
+    misses it; this one builds the server.
+    """
+    server = await _server(conn_manager, config)
+    tool = await server.get_tool("migration.plan")
+    schema = tool.parameters["properties"]["target"]
+    tables = schema["properties"]["tables"]["additionalProperties"]
+    assert set(tables["properties"]) == {"columns", "constraints", "indexes"}
+    column = tables["properties"]["columns"]["additionalProperties"]
+    assert column["required"] == ["type"]
+    assert set(column["properties"]) == {"type", "nullable", "default"}
+    # A primary key is a constraint here, and the schema must not imply otherwise.
+    assert "primary_key" not in column["properties"]
+    assert column["additionalProperties"] is False
+    # An index is a column list — a string or a list of strings, never an object.
+    index = tables["properties"]["indexes"]["additionalProperties"]
+    assert {"type": "string"} in index["anyOf"]
