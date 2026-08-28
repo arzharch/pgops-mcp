@@ -29,6 +29,7 @@ from typing import Any
 import asyncpg
 
 from pgops.connections import ConnectionManager
+from pgops.errors import ErrorCode, PgopsError
 from pgops.serialize import serialize_record
 
 _EXTENSION_PRESENT_SQL = """
@@ -198,6 +199,15 @@ def _find_redundant(rows: list[asyncpg.Record]) -> list[dict[str, Any]]:
 
 
 async def index_advise(conn_manager: ConnectionManager, limit: int = 10) -> IndexAdvice:
+    # Same guard as migration.history: a negative limit would reach a SQL LIMIT (in the
+    # pg_stat_statements branch) and raise, surfacing as an opaque INTERNAL_ERROR. Bound it.
+    if limit < 1:
+        raise PgopsError(
+            ErrorCode.INVALID_ARGUMENT,
+            f"limit must be at least 1, got {limit}",
+            hint="omit limit for the default of 10",
+        )
+    limit = min(limit, 1000)
     advice = IndexAdvice()
     async with conn_manager.acquire_readonly() as conn:
         stats_row = await conn.fetchrow(_STATS_AGE_SQL)

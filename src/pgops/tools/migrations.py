@@ -455,6 +455,18 @@ async def _execute_plan(
 
 
 async def migration_history(conn_manager: ConnectionManager, limit: int = 20) -> dict[str, Any]:
+    # Validate before it reaches SQL. A negative limit makes Postgres raise
+    # "LIMIT must not be negative", which is a PostgresError the tool does not anticipate
+    # and so surfaces as an opaque INTERNAL_ERROR — found by fuzzing during sign-off. Bound
+    # it to a sane range instead, with a clear message on the low end and a silent cap on
+    # the high end (the ledger is not something a caller needs ten-thousand rows of).
+    if limit < 1:
+        raise PgopsError(
+            ErrorCode.INVALID_ARGUMENT,
+            f"limit must be at least 1, got {limit}",
+            hint="omit limit for the default of 20",
+        )
+    limit = min(limit, 1000)
     pool = await conn_manager.readwrite_pool()
     async with pool.acquire() as conn:
         ledger = MigrationLedger(conn)

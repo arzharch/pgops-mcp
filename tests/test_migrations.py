@@ -492,3 +492,14 @@ async def test_apply_still_works_when_the_schema_has_not_drifted(
     finally:
         await conn.execute("DROP TABLE IF EXISTS nodrift_probe")
         await conn.close()
+
+
+@pytest.mark.parametrize("bad", [-5, 0, -1])
+async def test_history_rejects_a_nonpositive_limit(
+    conn_manager: ConnectionManager, bad: int
+) -> None:
+    """A negative limit reached a SQL LIMIT and raised 'LIMIT must not be negative', which
+    surfaced as an opaque INTERNAL_ERROR. Found by fuzzing every tool during sign-off."""
+    with pytest.raises(PgopsError) as exc:
+        await migration_history(conn_manager, limit=bad)
+    assert exc.value.code is ErrorCode.INVALID_ARGUMENT
