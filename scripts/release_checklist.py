@@ -25,17 +25,24 @@ def check(name: str, ok: bool, detail: str = "") -> None:
 
 
 def run(*args: str) -> tuple[int, str]:
-    p = subprocess.run(args, cwd=ROOT, capture_output=True, text=True)
+    # Use the running interpreter for python subprocesses, and never assume a hardcoded
+    # venv path exists — this must work in CI and on a fresh clone alike.
+    resolved = [sys.executable if a in ("python", ".venv/Scripts/python.exe") else a for a in args]
+    p = subprocess.run(resolved, cwd=ROOT, capture_output=True, text=True, check=False)
     return p.returncode, (p.stdout + p.stderr)
+
+
+def read(rel: str) -> str:
+    return (ROOT / rel).read_text(encoding="utf-8")
 
 
 def main(target: str) -> int:
     print(f"\nRelease checklist for v{target}\n" + "=" * 66)
 
     # 1. Version consistency across every place a version is written.
-    pt = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["version"]
-    init = re.search(r'__version__ = "([^"]+)"', (ROOT / "src/pgops/__init__.py").read_text()).group(1)
-    sj = json.loads((ROOT / "server.json").read_text())
+    pt = tomllib.loads(read("pyproject.toml"))["project"]["version"]
+    init = re.search(r'__version__ = "([^"]+)"', read("src/pgops/__init__.py")).group(1)
+    sj = json.loads(read("server.json"))
     pypi = next(p for p in sj["packages"] if p["registryType"] == "pypi")["version"]
     oci = next(p for p in sj["packages"] if p["registryType"] == "oci")["identifier"].rsplit(":", 1)[1]
     versions = {pt, init, sj["version"], pypi, oci}
@@ -44,14 +51,14 @@ def main(target: str) -> int:
 
     # 2. server.json ownership markers (registry publish fails without these).
     check("server.json name is namespaced", sj["name"].startswith("io.github."), sj["name"])
-    check("mcp-name marker in README", "mcp-name: " + sj["name"] in (ROOT / "README.md").read_text(),
+    check("mcp-name marker in README", "mcp-name: " + sj["name"] in read("README.md"),
           "for PyPI ownership verification")
 
     # 3. CHANGELOG has a dated section for this version, and [Unreleased] is empty.
-    cl = (ROOT / "CHANGELOG.md").read_text()
+    cl = read("CHANGELOG.md")
     m = re.search(rf"## \[{re.escape(target)}\] — (\d{{4}}-\d{{2}}-\d{{2}})", cl)
     check(f"CHANGELOG has a dated [{target}] section", m is not None, m.group(1) if m else "missing")
-    unrel = re.search(r"## \[Unreleased\]\n(.*?)## \[", cl, re.S)
+    unrel = re.search(r"## \[Unreleased\]\n(.*?)## \[", cl, re.DOTALL)
     check("CHANGELOG [Unreleased] is empty", bool(unrel) and not unrel.group(1).strip(),
           "content left under Unreleased" if unrel and unrel.group(1).strip() else "clean")
 
@@ -74,10 +81,10 @@ def main(target: str) -> int:
     if whls:
         z = zipfile.ZipFile(whls[0])
         meta = z.read(next(n for n in z.namelist() if n.endswith("METADATA"))).decode()
-        wv = re.search(r"^Version: (.+)$", meta, re.M).group(1)
+        wv = re.search(r"^Version: (.+)$", meta, re.MULTILINE).group(1)
         body = meta.split("\n\n", 1)[1]
         check("wheel version matches target", wv == target, wv)
-        check("wheel has project URLs (sidebar)", len(re.findall(r"^Project-URL:", meta, re.M)) >= 5)
+        check("wheel has project URLs (sidebar)", len(re.findall(r"^Project-URL:", meta, re.MULTILINE)) >= 5)
         check("README mcp-name marker in wheel", "mcp-name: " + sj["name"] in body)
         rel = re.findall(r"\]\((?!https?:|#)([^)]+)\)", body)
         check("no repo-relative links in README", len(rel) == 0, f"{len(rel)} broken: {rel[:3]}")
@@ -91,9 +98,7 @@ def main(target: str) -> int:
           out.strip().splitlines()[-1] if out.strip() else "")
 
     # 8. Tool count in docs matches reality (a contract users read).
-    api = (ROOT / "docs/API.md").read_text()
-    readme = (ROOT / "README.md").read_text()
-    n_headers = len(re.findall(r"^## [a-z]+\.[a-z]+", api, re.M))
+    readme = read("README.md")
     readme_counts = set(re.findall(r"\b(\d+) tools\b", readme))
     check("README tool count is consistent", len(readme_counts) <= 1, f"README says {readme_counts}")
 
