@@ -63,6 +63,14 @@ you.
   loses in-flight transactions; read-only mode now withholds both.
 - **A stale hint** told callers to "use query.write once Phase 2 lands" — a tool that has
   shipped since 0.1.0.
+- **`container.logs` did not publish its accepted severity values.** The parameter
+  reached clients as a bare string, so the eight valid values were discoverable only by
+  guessing wrong and reading the error. It is now an enum in the tool schema.
+- **The FastMCP startup banner is suppressed.** It wrote ASCII art and a link to an
+  unrelated hosting product to stderr, which under stdio is the log a client surfaces as
+  this server's own.
+- **`docs/API.md` no longer labels tools with internal phase numbers.** "Phase 4 ✅
+  implemented" is development bookkeeping; every tool in the reference is implemented.
 
 ### Added
 - **`migration.resolve(ledger_id, outcome, note)`** closes an interrupted migration. A
