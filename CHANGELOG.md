@@ -9,6 +9,38 @@ scopes — not Python symbols.
 
 ## [Unreleased]
 
+## [0.1.5] — 2026-08-28
+
+Findings from stress- and fuzz-testing the published 0.1.4 against a realistic 2M-row
+database: concurrency and rate-limit stress, malformed and pathological inputs, and
+database failure injection. The performance, limits and security all held; three inputs
+reached an opaque `INTERNAL_ERROR` where a clean, actionable error was owed.
+
+### Fixed
+- **A lost database connection surfaced as `INTERNAL_ERROR` on every tool.** SIGKILLing
+  the database mid read-storm returned "internal error; see server logs" for calls in
+  flight — the least useful message during an outage, and invisible over stdio where the
+  log cannot be read. asyncpg raises a dropped socket as `InterfaceError`, which is not a
+  `PostgresError` and so escaped to the generic handler. The single tool boundary now
+  maps the connection-lost family to `CONNECTION_FAILED` with a retry hint; the pool
+  already self-recovers once the database returns.
+- **An unparseable statement crashed classification instead of being refused.** sqlparse
+  caps a statement at 10,000 tokens and raises past that; a ~20,000-element `IN` list
+  therefore reached `INTERNAL_ERROR`. Because `classify()` is the safety gate, it now
+  fails closed — an unparseable statement is treated as unclassifiable and refused, never
+  executed.
+- **A non-string column type in a migration target crashed plan generation.**
+  `{"type": {"nested": "junk"}}` passed validation and then raised a `TypeError` deep in
+  DDL generation. Column `type` must be a non-empty string, and `default`/`nullable` must
+  be scalars; each is now refused with a clear `INVALID_ARGUMENT`.
+
+### Notes
+- Performance on the 2M-row ledger: ~30 ms p50 per call over HTTP (~12 ms over stdio),
+  flat regardless of database size; the denial path is the fastest at ~5 ms. Single-
+  session throughput tops out near 50/s (MCP session multiplexing, not the pool);
+  aggregate throughput scales with independent agent sessions. The per-subject rate
+  limiter and the connection-pool ceiling both behaved as designed under burst load.
+
 ## [0.1.4] — 2026-08-28
 
 Findings from a rogue-agent exercise against the published 0.1.3 artifact: six adversarial
