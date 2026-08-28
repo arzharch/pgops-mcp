@@ -9,6 +9,74 @@ scopes — not Python symbols.
 
 ## [Unreleased]
 
+Findings from auditing the published 0.1.2 artifact: a clean-room install from PyPI,
+driven against a four-container Compose stack under continuous write load. Ten defects,
+two of them security. If you are running 0.1.2, the two security items below apply to
+you.
+
+### Security
+- **A target schema could smuggle a second statement into generated DDL.** Four fields in
+  `migration.plan`'s target — a column type, a DEFAULT expression, a constraint
+  definition, an index column list — were interpolated into generated DDL verbatim. An
+  index defined as `"region); DROP TABLE t; CREATE INDEX z ON o (region"` produced a
+  single step that the planner reported as `destructive: false, highest_risk: medium`,
+  and `migration.apply` executed it. Because `apply` takes a `plan_id`, the reviewer
+  approves the risk summary rather than the SQL, so the drop was invisible at every point
+  a human looks. Rollback was affected too: the recorded inverse of that step is
+  `DROP INDEX`, which does not restore the table. Each field is now validated as a single
+  expression, and every generated statement is refused at construction if it parses to
+  more than one.
+- **`container.exec` allowed `psql` and `postgres`.** The allowlist deliberately excludes
+  shells, but `psql -c` runs arbitrary SQL outside every safety layer in this server —
+  classification, scope enforcement, the migration ledger, lock analysis — and `psql -c
+  "\! <cmd>"` is a shell escape that returned `uid=0(root)` inside the database
+  container. Both are removed. `pg_isready` remains for the diagnostic case.
+
+### Fixed
+- **`db.health` reported healthy tables as critically bloated.** The estimate compared
+  actual size against row width alone, omitting the 24-byte tuple header, the 4-byte line
+  pointer and the 24-byte page header — understating live bytes by roughly 45% on narrow
+  rows. A never-updated 600k-row table was reported at "critical: 55% bloat" when
+  `pgstattuple` measured dead+free at 0.05%, which invites `VACUUM FULL` (an exclusive
+  lock that rewrites the table) on a table with nothing to reclaim. Genuinely bloated
+  tables are still reported: an ~80% dead table now estimates at 84%.
+- **`ADD COLUMN ... DEFAULT <constant> NOT NULL` was reported as a table rewrite** — high
+  risk, blocking reads and writes, with a batched-backfill alternative recommended. Since
+  PostgreSQL 11 this is a catalog change: verified unchanged `relfilenode` and
+  `attmissingval`. An inline `UNIQUE` or `PRIMARY KEY` on a new column is now correctly
+  classified as an index build rather than a catalog change.
+- **`migration.rollback` could not be reached.** It takes a `ledger_id` and its
+  description says to get it from `migration.history`, which returned only the textual
+  `migration_id`. History entries now carry `ledger_id`.
+- **`db.health` counted background workers as client connections**, reporting five
+  connections with state `unknown` on an idle database. It now counts only client
+  backends and reports headroom against `max_connections`, with severity when it runs
+  low.
+- **`index.advise` printed "unknown" as a duration** on any database whose statistics
+  have never been explicitly reset — the normal state of a new database. The observation
+  window now falls back to server start time and says which bound it used.
+- **An index defined as an object** (`{"columns": [...]}`) silently planned
+  `CREATE INDEX ... (columns)`. It is now refused with a message naming the expected
+  shape.
+- **`PGOPS_READ_ONLY=1` still exposed `container.restart` and `container.exec`** when
+  approval mode was on. Restarting the database container drops every open connection and
+  loses in-flight transactions; read-only mode now withholds both.
+- **A stale hint** told callers to "use query.write once Phase 2 lands" — a tool that has
+  shipped since 0.1.0.
+
+### Added
+- **`migration.resolve(ledger_id, outcome, note)`** closes an interrupted migration. A
+  crash between recording intent and recording the result leaves a row `in_flight`, and
+  every later apply refuses because pgops cannot know whether the DDL committed. The only
+  documented way out was editing the ledger by hand in a SQL client, so a single crash
+  left the migration tools unusable. Resolve records the operator's conclusion — it does
+  not inspect the schema or guess — behind a confirmation token, with a required note, in
+  both the ledger and the audit log.
+- **`migration.plan` publishes the full target-schema grammar** in its input schema. The
+  `target` parameter previously reached clients as an unconstrained object, leaving the
+  grammar in prose that models routinely guessed wrong (a `primary_key` key on a column;
+  an object as an index definition).
+
 ## [0.1.2] — 2026-08-27
 
 0.1.1 published to PyPI but never reached the MCP Registry: the workflow tagged the

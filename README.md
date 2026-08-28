@@ -6,7 +6,7 @@
 > anything.**
 
 Point Claude, Cursor, or VS Code at a database and ask questions in plain English. Your
-assistant gets 17 tools for inspecting schemas, running queries, diagnosing slow ones,
+assistant gets 18 tools for inspecting schemas, running queries, diagnosing slow ones,
 and planning migrations. What it does *not* get is a way to quietly destroy your data.
 
 ## What it actually looks like
@@ -196,7 +196,7 @@ Links are absolute so they resolve from the PyPI project page as well as from Gi
 | Doc | What's in it |
 |---|---|
 | [Getting started](https://github.com/arzharch/pgops-mcp/blob/main/docs/GETTING_STARTED.md) | First 15 minutes, no MCP knowledge assumed |
-| [Tool reference](https://github.com/arzharch/pgops-mcp/blob/main/docs/API.md) | All 17 tools: parameters, returns, error codes, scopes |
+| [Tool reference](https://github.com/arzharch/pgops-mcp/blob/main/docs/API.md) | All 18 tools: parameters, returns, error codes, scopes |
 | [Setup & configuration](https://github.com/arzharch/pgops-mcp/blob/main/SETUP.md) | Clients, HTTP auth, observability, troubleshooting |
 | [Environment variables](https://github.com/arzharch/pgops-mcp/blob/main/.env.example) | Every knob, documented |
 | [Security model](https://github.com/arzharch/pgops-mcp/blob/main/SECURITY.md) | What it can do, what it refuses, known limits |

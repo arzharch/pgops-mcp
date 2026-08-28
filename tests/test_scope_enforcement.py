@@ -18,6 +18,8 @@ import pytest
 from conftest import free_port
 
 from pgops.auth import TOOL_SCOPES, Scope, build_verifier, generate_keypair, issue_token
+from pgops.config import PgopsConfig
+from pgops.connections import ConnectionManager
 from pgops.middleware import LOCAL_CALLER, Caller, current_caller
 
 
@@ -107,3 +109,27 @@ async def test_scopes_are_enforced_over_http(conn_manager: object, config: objec
             assert result.data["rows_affected"] == 1
     finally:
         task.cancel()
+
+
+async def test_every_registered_tool_has_an_explicit_scope(
+    conn_manager: ConnectionManager, config: PgopsConfig
+) -> None:
+    """Deny-by-default is the safety net, not the design.
+
+    A tool missing from TOOL_SCOPES is treated as admin-only, so nothing is exposed — but
+    it is also silently unreachable for the callers who should have it, and that failure
+    is invisible until someone with a write token finds a write tool refusing them.
+    `migration.resolve` shipped this way: registered, gated, and absent from the map.
+    """
+    from pgops.__main__ import build_server
+
+    # Approval mode on, read-only off: the maximal surface. Several tools are registered
+    # conditionally, and a scope map checked against a partial surface would call the
+    # entries for the withheld ones stale.
+    full = PgopsConfig.from_env(dsn=config.dsn, approval_mode=True)
+    server = build_server(full, conn_manager, auth=None)
+    registered = {t.name for t in await server.list_tools()}
+    missing = registered - set(TOOL_SCOPES)
+    assert not missing, f"registered tools with no TOOL_SCOPES entry: {sorted(missing)}"
+    stale = set(TOOL_SCOPES) - registered
+    assert not stale, f"TOOL_SCOPES entries for tools that no longer exist: {sorted(stale)}"

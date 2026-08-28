@@ -70,6 +70,10 @@ TOOL_SCOPES: dict[str, Scope] = {
     "query.write": Scope.WRITE,
     "migration.apply": Scope.WRITE,
     "migration.rollback": Scope.WRITE,
+    # Records a conclusion in the ledger rather than changing the schema, but it unblocks
+    # every subsequent apply, so it belongs with the other migration state changes rather
+    # than with the read tools.
+    "migration.resolve": Scope.WRITE,
     "container.restart": Scope.ADMIN,
     "container.exec": Scope.ADMIN,
 }

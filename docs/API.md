@@ -15,7 +15,7 @@ Conventions:
 ---
 
 ## schema.inspect
-**Phase 1 ✅ implemented · Role: readonly**
+**Role: readonly**
 
 Inspect database structure.
 
@@ -30,7 +30,7 @@ extension list, schema-level stats.
 ---
 
 ## query.read
-**Phase 1 ✅ implemented · Role: readonly**
+**Role: readonly**
 
 Execute a read-only statement.
 
@@ -46,7 +46,7 @@ Values serialized safely (JSONB, arrays, numerics).
 ---
 
 ## query.write
-**Phase 2 ✅ implemented · Role: readwrite + confirmation for destructive**
+**Role: readwrite + confirmation for destructive**
 
 Execute a mutating statement. Not registered at all when the server runs with
 `--read-only`.
@@ -77,7 +77,7 @@ Error codes: `CONFIRMATION_REQUIRED`, `INVALID_CONFIRMATION`, `CONFIRMATION_MISM
 ---
 
 ## query.explain
-**Phase 3 ✅ implemented · Role: readonly, or readwrite when `analyze=true` on a write**
+**Role: readonly, or readwrite when `analyze=true` on a write**
 
 Explain a statement and return a parsed verdict.
 
@@ -112,7 +112,7 @@ Row and time values account for `Actual Loops`, and distinguish parallel workers
 ---
 
 ## index.advise
-**Phase 3 ✅ implemented · Role: readonly**
+**Role: readonly**
 
 | Param | Type | Default | Notes |
 |---|---|---|---|
@@ -135,7 +135,7 @@ Returns:
 ---
 
 ## db.health
-**Phase 1 ✅ implemented · Role: readonly**
+**Role: readonly**
 
 Health snapshot: connection counts by state, cache hit ratio, dead tuples/top bloat
 tables, long-running queries (>5s), blocked sessions via `pg_blocking_pids()`. Each
@@ -145,7 +145,7 @@ finding carries `{category, severity, summary, detail}` where severity is one of
 ---
 
 ## migration.plan
-**Phase 4 ✅ implemented · Role: readonly (dry-run is rolled back)**
+**Role: readonly (dry-run is rolled back)**
 
 Diff the live schema against a target and render an annotated plan. Executes nothing.
 
@@ -186,7 +186,7 @@ Behaviour worth knowing:
 ---
 
 ## migration.describe
-**Phase 6a ✅ implemented · Role: readonly · Scope: `pgops:read` · Requires client sampling**
+**Role: readonly · Scope: `pgops:read` · Requires client sampling**
 
 Plan a schema change described in plain English. Wraps `migration.plan`: the only extra
 step is translating the description into a `target` object.
@@ -233,7 +233,7 @@ Behaviour worth knowing:
 ---
 
 ## migration.apply
-**Phase 4 ✅ implemented · Role: readwrite + confirmation**
+**Role: readwrite + confirmation**
 
 | Param | Type | Default | Notes |
 |---|---|---|---|
@@ -257,14 +257,41 @@ Error codes: `CONFIRMATION_REQUIRED`, `CONFIRMATION_MISMATCH`, `MIGRATION_IN_FLI
 ---
 
 ## migration.history
-**Phase 4 ✅ implemented · Role: readonly**
+**Role: readonly**
 
 Ledger history plus any `in_flight` migrations, with a `warning` when one is present.
+Every entry carries `ledger_id` — the integer `migration.rollback` and
+`migration.resolve` take.
+
+---
+
+## migration.resolve
+**Role: readwrite + confirmation**
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| ledger_id | int | required | the ledger row id, from migration.history |
+| outcome | str | required | `applied` or `failed` |
+| note | str | required | what you checked and what you concluded |
+| confirm_token | str? | null | required before anything is recorded |
+
+Closes an interrupted (`in_flight`) migration.
+
+A migration interrupted between recording intent and recording the result — the database
+went away, the server was killed — leaves a ledger row that cannot be interpreted: pgops
+does not know whether the DDL committed. Every later `migration.apply` refuses while one
+stands, which is correct, and would otherwise be permanent.
+
+**This tool records a conclusion; it does not reach one.** It never inspects the schema
+and never guesses. Inspect with `schema.inspect`, decide, and state the outcome —
+`applied` if the change is present, `failed` if it is not. The note is mandatory and is
+the only explanation the ledger will carry for that row. Both the ledger and the audit
+log record it under your identity.
 
 ---
 
 ## migration.rollback
-**Phase 4 ✅ implemented · Role: readwrite + confirmation**
+**Role: readwrite + confirmation**
 
 | Param | Type | Default | Notes |
 |---|---|---|---|
@@ -302,7 +329,7 @@ Error codes: `CONFIRMATION_REQUIRED`, `CONFIRMATION_MISMATCH`,
 ---
 
 ## env.topology
-**Phase 5 ✅ implemented · Docker read-only API**
+**Docker read-only API**
 
 | Param | Type | Default | Notes |
 |---|---|---|---|
@@ -320,7 +347,7 @@ allowlist of fields (name, image, status, health, compose project/service, ports
 by default.
 
 ## container.logs
-**Phase 5 ✅ implemented**
+
 
 | Param | Type | Default | Notes |
 |---|---|---|---|
@@ -333,21 +360,21 @@ Returns `{container, lines[], returned, scanned, min_severity}`. Lines with no
 recognizable severity are dropped when filtering.
 
 ## container.stats
-**Phase 5 ✅ implemented**
+
 
 CPU percent, memory (used/limit/percent), total IO bytes, and CPU throttling counters.
 Takes ~1s: a CPU percentage needs two samples to compute a delta. Memory matches
 `docker stats` accounting (usage minus reclaimable `inactive_file`).
 
 ## env.correlate
-**Phase 5 ✅ implemented**
+
 
 Runs `db.health`, finds the database container, and returns plain-language hints joining
 database symptoms to container resource pressure. Hints are phrased "consistent with",
 never as diagnoses, and the tool stays quiet when nothing is wrong.
 
 ## container.restart / container.exec
-**Phase 5 ✅ implemented · Gated twice (exec: three times)**
+**Gated twice (exec: three times)**
 
 Not registered as tools at all unless the server runs with `--approval-mode`
 (`PGOPS_APPROVAL_MODE=true`) — an agent is never told they exist. With the flag, each
@@ -418,7 +445,7 @@ pgops-mcp --transport http --public-key <path>       # binds 127.0.0.1 by defaul
 | Scope | Grants |
 |---|---|
 | `pgops:read` | schema.inspect, query.read, query.explain, db.health, index.advise, migration.plan, migration.history, env.*, container.logs/stats |
-| `pgops:write` | query.write, migration.apply, migration.rollback |
+| `pgops:write` | query.write, migration.apply, migration.rollback, migration.resolve |
 | `pgops:admin` | container.restart, container.exec |
 
 The server holds only the public key — it can verify tokens, never issue them. A tool
