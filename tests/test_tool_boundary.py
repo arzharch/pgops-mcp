@@ -68,3 +68,38 @@ async def test_boundary_preserves_function_metadata() -> None:
     assert my_tool_name.__name__ == "my_tool_name"
     assert my_tool_name.__doc__ is not None
     assert "MCP tool description" in my_tool_name.__doc__
+
+
+async def test_lost_connection_maps_to_connection_failed_not_internal_error() -> None:
+    """A dropped database connection is an operational event, not an internal bug. asyncpg
+    raises it as InterfaceError (not a PostgresError), which used to fall through to the
+    generic handler and reach the caller as an opaque INTERNAL_ERROR — least helpful of
+    all during an outage, and invisible over stdio where the log cannot be read. Found by
+    SIGKILLing the database mid read-storm: 34 of 60 reads came back INTERNAL_ERROR."""
+    import asyncpg
+
+    for exc in (
+        asyncpg.InterfaceError("connection is closed"),
+        asyncpg.ConnectionDoesNotExistError("gone"),
+        ConnectionResetError("socket reset"),
+        TimeoutError("acquire timed out"),
+    ):
+
+        @tool_boundary
+        async def tool(_e: BaseException = exc) -> dict[str, Any]:
+            raise _e
+
+        result = await tool()
+        assert result["error"]["code"] == ErrorCode.CONNECTION_FAILED.value, exc
+        assert "retry" in result["error"]["hint"]
+
+
+async def test_unexpected_error_still_becomes_internal_error() -> None:
+    """The connection-lost catch must not swallow genuine bugs — a ValueError from our own
+    code is still an INTERNAL_ERROR, not misreported as a connection blip."""
+    @tool_boundary
+    async def tool() -> dict[str, Any]:
+        raise ValueError("a real bug in our parsing")
+
+    result = await tool()
+    assert result["error"]["code"] == ErrorCode.INTERNAL_ERROR.value

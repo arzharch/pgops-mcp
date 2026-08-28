@@ -9,9 +9,28 @@ from collections.abc import Awaitable, Callable
 from enum import StrEnum
 from typing import Any
 
+import asyncpg
+
 from pgops.observability import ToolSpan
 
 logger = logging.getLogger("pgops")
+
+# Losing the database connection is not an internal bug — it is an operational event
+# (the database restarted, failed over, or a network blip dropped the socket) that a
+# caller should be told about plainly and can retry. asyncpg surfaces it several ways:
+# InterfaceError (the socket was closed under an open operation) is raised by the driver
+# and is NOT a PostgresError, while the PostgresConnectionError family is. Catching the
+# union here, at the one boundary every tool passes through, means none of them reaches
+# the generic handler and becomes an opaque INTERNAL_ERROR — which is exactly what a
+# caller sees least helpfully during an outage, and cannot investigate at all over stdio
+# where the server log is not visible. Found by SIGKILLing the database mid read-storm.
+_CONNECTION_LOST = (
+    asyncpg.InterfaceError,
+    asyncpg.PostgresConnectionError,
+    ConnectionError,
+    OSError,
+    TimeoutError,
+)
 
 
 class ErrorCode(StrEnum):
@@ -90,6 +109,15 @@ def tool_boundary[**P](
                 logger.info("tool %s refused: %s %s", func.__name__, exc.code.value, exc.message)
                 span.set_verdict("refused", error_code=exc.code.value)
                 return exc.to_dict()
+            except _CONNECTION_LOST as exc:
+                logger.warning("tool %s: database connection lost: %s", func.__name__, exc)
+                span.set_verdict("failed", error_code=ErrorCode.CONNECTION_FAILED.value)
+                return PgopsError(
+                    ErrorCode.CONNECTION_FAILED,
+                    "the database connection was lost while handling this call",
+                    hint="the database may be restarting, failing over, or briefly "
+                    "unreachable; the pool reconnects on its own — retry in a moment",
+                ).to_dict()
             except Exception as exc:
                 # exc_info: operator sees the whole traceback on stderr; the caller does not.
                 logger.exception("unhandled error in tool %s", func.__name__)
