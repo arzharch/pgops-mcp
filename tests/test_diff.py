@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from pgops.errors import ErrorCode, PgopsError
-from pgops.migrations.diff import ChangeKind, diff_schema
+from pgops.migrations.diff import Change, ChangeKind, diff_schema
 
 LIVE = {
     "tables": [
@@ -194,3 +194,92 @@ def test_missing_tables_key_is_refused() -> None:
     with pytest.raises(PgopsError) as exc_info:
         diff_schema(LIVE, {"orders": {}})
     assert exc_info.value.code is ErrorCode.INVALID_ARGUMENT
+
+
+# --- Statement smuggling ---------------------------------------------------------
+#
+# Parts of a target spec are SQL text that pgops interpolates into DDL it generates: a
+# column type, a DEFAULT expression, a CHECK definition, an index column list. Before
+# these checks existed, a constraint definition of
+# "CHECK (id > 0); DROP TABLE customers; --" produced ONE Change whose kind was
+# add_constraint, and the planner therefore reported the whole plan as
+# `destructive: false, highest_risk: medium` — while migration.apply ran the DROP.
+# Verified end-to-end against a live database before the fix: 600k rows, one step,
+# "applied: true".
+
+
+@pytest.mark.parametrize(
+    ("label", "target"),
+    [
+        (
+            "constraint definition",
+            {"tables": {"orders": {"constraints": {"c": "CHECK (id > 0); DROP TABLE t"}}}},
+        ),
+        (
+            "index columns",
+            {"tables": {"orders": {"indexes": {"i": "id); DROP TABLE t; CREATE INDEX z ON o (id"}}}},
+        ),
+        (
+            "column type",
+            {"tables": {"orders": {"columns": {"n": {"type": "int; DROP TABLE t"}}}}},
+        ),
+        (
+            "column default",
+            {"tables": {"orders": {"columns": {"n": {"type": "int", "default": "0; DROP TABLE t"}}}}},
+        ),
+    ],
+)
+def test_second_statement_smuggled_into_a_fragment_is_refused(
+    label: str, target: dict[str, object]
+) -> None:
+    with pytest.raises(PgopsError) as exc:
+        diff_schema(LIVE, target)
+    assert exc.value.code is ErrorCode.INVALID_ARGUMENT
+    assert "more than one SQL statement" in exc.value.message
+
+
+def test_comment_in_a_fragment_is_refused() -> None:
+    """A comment can hide the tail of the generated statement from a human reviewer."""
+    target = {"tables": {"orders": {"constraints": {"c": "CHECK (id > 0) -- rest hidden"}}}}
+    with pytest.raises(PgopsError) as exc:
+        diff_schema(LIVE, target)
+    assert "comment" in exc.value.message
+
+
+def test_semicolon_inside_a_string_literal_is_still_allowed() -> None:
+    """The check must not be a naive scan for ';' — this default is legitimate SQL."""
+    target = {"tables": {"orders": {"columns": {"sep": {"type": "text", "default": "';'"}}}}}
+    changes = diff_schema(LIVE, target).changes
+    assert changes[0].sql == 'ALTER TABLE "orders" ADD COLUMN "sep" text DEFAULT \';\''
+
+
+def test_one_statement_invariant_holds_at_change_construction() -> None:
+    """The backstop, independent of any field-level check.
+
+    Field checks can only cover the fields known today; this makes a multi-statement
+    Change unrepresentable no matter which future code path builds it.
+    """
+    with pytest.raises(PgopsError) as exc:
+        Change(kind=ChangeKind.CREATE_INDEX, table="t", sql="CREATE INDEX a ON t (x); DROP TABLE t")
+    assert "more than one SQL statement" in exc.value.message
+
+
+def test_index_spec_as_a_dict_is_refused_with_a_useful_message() -> None:
+    """{"columns": [...]} is the shape an agent reaches for first.
+
+    It used to join the dict's *keys*, planning `CREATE INDEX ... (columns)`, and the
+    mistake only surfaced as `column "columns" does not exist` from the database.
+    """
+    target = {"tables": {"orders": {"indexes": {"i": {"columns": ["a", "b"]}}}}}
+    with pytest.raises(PgopsError) as exc:
+        diff_schema(LIVE, target)
+    assert "list of column names" in exc.value.message
+
+
+def test_unsupported_column_key_names_the_supported_ones() -> None:
+    """primary_key is the key agents try; the error must point at where it belongs."""
+    target = {"tables": {"s": {"columns": {"id": {"type": "bigserial", "primary_key": True}}}}}
+    with pytest.raises(PgopsError) as exc:
+        diff_schema(LIVE, target)
+    assert exc.value.hint is not None
+    assert "constraints" in exc.value.hint

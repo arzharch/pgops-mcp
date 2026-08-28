@@ -25,6 +25,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
+import sqlparse
+
 from pgops.errors import ErrorCode, PgopsError
 
 
@@ -87,6 +89,33 @@ class Change:
     destructive: bool = False
     data_loss_reason: str | None = None
 
+    def __post_init__(self) -> None:
+        """Every generated statement must be exactly one statement.
+
+        This is the backstop for the whole module, and it exists because the fragment
+        checks below can only cover the fields known today. Parts of the target spec —
+        a column type, a DEFAULT expression, a constraint definition, an index column
+        list — are SQL text that pgops does not parse; it interpolates them into DDL it
+        builds. Without this invariant, a constraint definition of
+
+            "CHECK (total_cents >= 0); DROP TABLE customers; --"
+
+        produced a *single* Change whose `sql` dropped a table, which the planner then
+        annotated `destructive: false, risk: medium` — because it classifies by
+        ChangeKind, and the kind was ADD_CONSTRAINT. Both the risk summary and the
+        rollback plan describe only the statement pgops thinks it emitted. Enforcing
+        one-statement-per-Change at construction makes that class of mismatch
+        unrepresentable rather than merely unlikely.
+        """
+        if len([st for st in sqlparse.split(self.sql) if st.strip()]) > 1:
+            raise PgopsError(
+                ErrorCode.INVALID_ARGUMENT,
+                f"refusing to plan {self.kind.value} on {self.table!r}: the generated "
+                f"statement contains more than one SQL statement",
+                hint="a value in the target schema smuggled a statement separator into "
+                "generated DDL; pass one expression per field",
+            )
+
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
             "kind": self.kind.value,
@@ -129,6 +158,56 @@ def _quote_ident(name: str) -> str:
     return f'"{escaped}"'
 
 
+def _reject_smuggled_sql(field: str, text: str) -> None:
+    """Refuse a target-schema fragment that is more than one SQL expression.
+
+    These fragments are interpolated into DDL verbatim — pgops cannot type-check a
+    Postgres type name or a CHECK expression, and pretending otherwise would mean
+    reimplementing the parser. What it can do is insist that a field which is supposed
+    to be *one expression* does not carry a statement boundary or a comment introducer
+    that hides the rest of the line. `sqlparse.split` is used rather than a scan for
+    ";" because a semicolon inside a string literal (DEFAULT ';') is legitimate and a
+    naive check would reject it.
+    """
+    if len([st for st in sqlparse.split(text) if st.strip()]) > 1:
+        raise PgopsError(
+            ErrorCode.INVALID_ARGUMENT,
+            f"{field} contains more than one SQL statement",
+            hint="this field is interpolated into generated DDL and must be a single "
+            "expression; statement separators are refused",
+        )
+    if "--" in text or "/*" in text:
+        raise PgopsError(
+            ErrorCode.INVALID_ARGUMENT,
+            f"{field} contains a SQL comment",
+            hint="comments in an interpolated fragment can hide the rest of the "
+            "generated statement from review; remove them",
+        )
+
+
+def _index_columns(field: str, definition: Any) -> str:
+    """Normalise an index definition to a column list, refusing shapes we don't handle.
+
+    Previously any non-str value was passed to `", ".join(...)`, so a dict — the shape
+    an agent reaches for first, {"columns": [...]} — silently joined its *keys* and
+    planned `CREATE INDEX ... (columns)`. That reached the database before anything
+    complained, and the resulting "column \"columns\" does not exist" pointed nowhere
+    near the actual mistake.
+    """
+    if isinstance(definition, str):
+        columns = definition
+    elif isinstance(definition, list) and all(isinstance(c, str) for c in definition):
+        columns = ", ".join(definition)
+    else:
+        raise PgopsError(
+            ErrorCode.INVALID_ARGUMENT,
+            f"{field} must be a column name string or a list of column names",
+            hint='e.g. {"indexes": {"orders_region_idx": ["region", "created_at"]}}',
+        )
+    _reject_smuggled_sql(field, columns)
+    return columns
+
+
 def _validate_target(target: dict[str, Any]) -> None:
     if "tables" not in target:
         raise PgopsError(
@@ -162,7 +241,24 @@ def _validate_target(target: dict[str, Any]) -> None:
                 raise PgopsError(
                     ErrorCode.INVALID_ARGUMENT,
                     f"column {table_name}.{col_name} has unsupported keys: {sorted(col_extra)}",
+                    hint=f"supported: {sorted(_KNOWN_COLUMN_KEYS)}. A primary key or a "
+                    f'foreign key goes in "constraints", not on the column.',
                 )
+            _reject_smuggled_sql(f"column {table_name}.{col_name} type", str(col["type"]))
+            if col.get("default") is not None:
+                _reject_smuggled_sql(
+                    f"column {table_name}.{col_name} default", str(col["default"])
+                )
+        for cons_name, definition in spec.get("constraints", {}).items():
+            if not isinstance(definition, str):
+                raise PgopsError(
+                    ErrorCode.INVALID_ARGUMENT,
+                    f"constraint {table_name}.{cons_name} must be a definition string",
+                    hint='e.g. {"constraints": {"orders_pkey": "PRIMARY KEY (id)"}}',
+                )
+            _reject_smuggled_sql(f"constraint {table_name}.{cons_name}", definition)
+        for idx_name, definition in spec.get("indexes", {}).items():
+            _index_columns(f"index {table_name}.{idx_name}", definition)
 
 
 def _column_definition(name: str, spec: dict[str, Any]) -> str:
@@ -280,7 +376,7 @@ def _emit_constraints_and_indexes(
     for name, definition in spec.get("indexes", {}).items():
         if name in existing_indexes:
             continue
-        columns = definition if isinstance(definition, str) else ", ".join(definition)
+        columns = _index_columns(f"index {table}.{name}", definition)
         changeset.changes.append(
             Change(
                 kind=ChangeKind.CREATE_INDEX,
