@@ -52,10 +52,21 @@ Stated plainly rather than left to be discovered:
 - **No per-session database isolation.** Auth identifies *who* and scopes limit *what*,
   but every authenticated caller shares one connection manager and one audit log. This
   is built for one engineer and one or a few databases, not multi-tenant SaaS.
+- **Data access is bounded by the database role, not by pgops.** Scopes gate which
+  *tools* a caller may use (read vs. write vs. admin); they do not restrict which tables
+  or rows a read may touch. `query.read` can read anything the connecting role can read,
+  including a table of secrets — pgops has no table- or column-level access control and
+  does not intend to, because the database already does this well. A read-tier token on
+  a superuser DSN can read the whole cluster. **Connect with a least-privilege role**
+  (and prefer `PGOPS_READONLY_DSN` for the read pool); the role's `GRANT`s are the data
+  boundary, and a broad one is a broad exposure regardless of token scope.
 - **Confirmation tokens are in-memory**, so a restart invalidates outstanding approvals.
   That is the safe direction to fail.
-- **`container.exec`'s allowlist is checked by basename.** It is a diagnostic
-  convenience, not a sandbox; treat `--approval-mode` as granting host-level trust.
+- **`container.exec` is a diagnostic convenience, not a sandbox.** Its command allowlist
+  is checked by basename and refuses any interpreter (sh, bash, env, find, …) named
+  anywhere in the command, so an allowlisted binary cannot be used to launch a shell —
+  but treat `--approval-mode` as granting host-level trust regardless. Anyone who can
+  call it can read files inside the database container as whatever user it runs as.
 
 ## Supported versions
 
