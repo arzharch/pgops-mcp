@@ -9,6 +9,21 @@ scopes — not Python symbols.
 
 ## [Unreleased]
 
+## [0.1.7] — 2026-08-29
+
+A QA sign-off pass — fuzzing every tool and checking the scope matrix — before attesting
+the server is clean. The scope enforcement and error contract held; one input path did not.
+
+### Fixed
+- **A negative `limit` to `migration.history` or `index.advise` raised an opaque
+  `INTERNAL_ERROR`.** The value reached a SQL `LIMIT`, Postgres raised "LIMIT must not be
+  negative", and that unanticipated error surfaced as "internal error; see server logs"
+  instead of a clear refusal. Both tools now reject a limit below 1 with `INVALID_ARGUMENT`
+  and cap the upper bound. Found by fuzzing all 18 tools during a formal QA sign-off, which
+  also confirmed — across the same sweep — that no token performs an out-of-scope action
+  and no gated destructive statement executes.
+
+
 ## [0.1.6] — 2026-08-28
 
 A data-safety fix found by probing concurrency directly: what happens when the database is

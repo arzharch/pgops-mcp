@@ -3,7 +3,7 @@
   "name": "io.github.arzharch/pgops-mcp",
   "title": "pgops",
   "description": "Safe, audited PostgreSQL operations for AI agents: queries, migrations, EXPLAIN, containers",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "repository": {
     "url": "https://github.com/arzharch/pgops-mcp",
     "source": "github"
@@ -13,7 +13,7 @@
       "registryType": "pypi",
       "registryBaseUrl": "https://pypi.org",
       "identifier": "pgops-mcp",
-      "version": "0.1.6",
+      "version": "0.1.7",
       "runtimeHint": "uvx",
       "transport": {
         "type": "stdio"
@@ -64,7 +64,7 @@
     },
     {
       "registryType": "oci",
-      "identifier": "ghcr.io/arzharch/pgops-mcp:0.1.6",
+      "identifier": "ghcr.io/arzharch/pgops-mcp:0.1.7",
       "transport": {
         "type": "stdio"
       },
