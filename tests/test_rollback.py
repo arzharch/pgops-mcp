@@ -26,7 +26,12 @@ from pgops.migrations.rollback import (
     plan_rollback,
     rollback_migration,
 )
-from pgops.tools.migrations import migration_apply, migration_plan
+from pgops.tools.migrations import (
+    migration_apply,
+    migration_history,
+    migration_plan,
+    migration_resolve,
+)
 
 
 async def _columns(dsn: str, table: str) -> set[str]:
@@ -358,3 +363,161 @@ async def test_rollback_records_verdicts_in_the_audit_log(
     verdicts = [e["verdict"] for e in log.read_all()]
     assert verdicts.count("refused_pending_confirmation") == 1
     assert verdicts[-1] == "executed"
+
+
+# --- Interrupted migrations: discovery and resolution ------------------------------
+
+
+async def test_history_carries_the_ledger_id_rollback_asks_for(
+    conn_manager: ConnectionManager,
+    config: PgopsConfig,
+    audit: AuditLog,
+    tokens: ConfirmationTokenStore,
+) -> None:
+    """migration.rollback takes `ledger_id: int`, and its description tells the caller
+    to get it "from migration.history".
+
+    history used to serialize only the text `migration_id`, so the integer that rollback
+    and resolve require appeared nowhere in the MCP surface — the documented flow could
+    not be completed by any client.
+    """
+    target: dict[str, Any] = {"tables": {"items": {"columns": {"disc": {"type": "text"}}}}}
+    await _apply_migration(conn_manager, config, audit, tokens, target, name="discoverable")
+    history = await migration_history(conn_manager, limit=5)
+    assert history["history"]
+    for entry in history["history"]:
+        assert isinstance(entry["ledger_id"], int)
+
+
+async def test_an_interrupted_migration_can_be_resolved_without_leaving_the_server(
+    conn_manager: ConnectionManager,
+    config: PgopsConfig,
+    audit: AuditLog,
+    tokens: ConfirmationTokenStore,
+) -> None:
+    """A crash mid-apply used to brick the migration subsystem permanently.
+
+    The ledger row stays `in_flight`, every later apply refuses (correctly — pgops
+    cannot know whether the DDL committed), and the only documented way out was to
+    UPDATE the ledger by hand in psql. Verified by SIGKILLing Postgres mid-index-build
+    against a live database: the pool recovered and queries resumed, but every
+    subsequent migration.apply refused, for an MCP server whose whole purpose is that
+    an agent can operate the database without a human opening a SQL client.
+    """
+    pool = await conn_manager.readwrite_pool()
+    async with pool.acquire() as conn:
+        ledger = MigrationLedger(conn)
+        await ledger.ensure_table()
+        stranded = await ledger.begin(
+            migration_id="interrupted-1",
+            name="crashed",
+            checksum="deadbeef",
+            steps=["ALTER TABLE items ADD COLUMN never_finished text"],
+            applied_by="test",
+        )
+
+    # The subsystem is blocked while it stands.
+    with pytest.raises(PgopsError) as blocked:
+        await _apply_migration(
+            conn_manager,
+            config,
+            audit,
+            tokens,
+            {"tables": {"items": {"columns": {"blocked": {"type": "text"}}}}},
+        )
+    assert blocked.value.code is ErrorCode.MIGRATION_IN_FLIGHT
+    assert blocked.value.hint is not None
+    assert "migration.resolve" in blocked.value.hint, "the refusal must name the way out"
+
+    # Resolving requires a confirmation token, like every other state change.
+    with pytest.raises(PgopsError) as needs_token:
+        await migration_resolve(
+            conn_manager, audit, tokens, stranded, "failed", "checked: column absent"
+        )
+    assert needs_token.value.code is ErrorCode.CONFIRMATION_REQUIRED
+    assert needs_token.value.hint is not None
+    token = needs_token.value.hint.split("confirm_token=")[1].strip("'")
+
+    result = await migration_resolve(
+        conn_manager,
+        audit,
+        tokens,
+        stranded,
+        "failed",
+        "checked: column absent",
+        confirm_token=token,
+    )
+    assert result["resolved"] is True
+
+    history = await migration_history(conn_manager, limit=10)
+    assert history["in_flight"] == []
+    assert history["warning"] is None
+
+    # And the subsystem works again.
+    await _apply_migration(
+        conn_manager,
+        config,
+        audit,
+        tokens,
+        {"tables": {"items": {"columns": {"unblocked": {"type": "text"}}}}},
+        name="unblocked",
+    )
+
+
+@pytest.mark.parametrize(
+    ("outcome", "note", "expected"),
+    [
+        ("maybe", "n", "outcome must be"),
+        ("applied", "   ", "note is required"),
+    ],
+)
+async def test_resolve_refuses_an_unstated_or_unexplained_outcome(
+    conn_manager: ConnectionManager,
+    audit: AuditLog,
+    tokens: ConfirmationTokenStore,
+    outcome: str,
+    note: str,
+    expected: str,
+) -> None:
+    """The note is the only explanation the ledger will ever carry for this row."""
+    pool = await conn_manager.readwrite_pool()
+    async with pool.acquire() as conn:
+        ledger = MigrationLedger(conn)
+        await ledger.ensure_table()
+        row_id = await ledger.begin(
+            migration_id=f"interrupted-{outcome}",
+            name="crashed",
+            checksum="cafe",
+            steps=["SELECT 1"],
+            applied_by="test",
+        )
+    try:
+        with pytest.raises(PgopsError) as exc:
+            await migration_resolve(conn_manager, audit, tokens, row_id, outcome, note)
+        assert expected in exc.value.message
+    finally:
+        # An in_flight row blocks every later apply — including the ones in other
+        # tests. This one is a fixture, not a real interruption.
+        async with pool.acquire() as conn:
+            await conn.execute(f"DELETE FROM {LEDGER_TABLE} WHERE id = $1", row_id)
+
+
+async def test_resolve_refuses_a_migration_that_is_not_in_flight(
+    conn_manager: ConnectionManager,
+    config: PgopsConfig,
+    audit: AuditLog,
+    tokens: ConfirmationTokenStore,
+) -> None:
+    """Resolve exists for interrupted rows only; a completed one is not ambiguous."""
+    await _apply_migration(
+        conn_manager,
+        config,
+        audit,
+        tokens,
+        {"tables": {"items": {"columns": {"settled": {"type": "text"}}}}},
+        name="settled",
+    )
+    ledger_id = await _latest_ledger_id(conn_manager)
+    with pytest.raises(PgopsError) as exc:
+        await migration_resolve(conn_manager, audit, tokens, ledger_id, "failed", "n/a")
+    assert "only an interrupted" in exc.value.message

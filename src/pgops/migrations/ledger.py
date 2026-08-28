@@ -98,6 +98,12 @@ class LedgerEntry:
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            # migration.rollback takes `ledger_id`, an integer, and its description
+            # tells the caller to get it "from migration.history" — which returns these
+            # dicts. Omitting `id` here meant history emitted only the text
+            # `migration_id`, so the integer rollback needs appeared nowhere in the MCP
+            # surface and the documented flow could not be completed by any client.
+            "ledger_id": self.id,
             "migration_id": self.migration_id,
             "name": self.name,
             "checksum": self.checksum,
@@ -209,6 +215,35 @@ class MigrationLedger:
             row_id,
             error[:2000],
         )
+
+    async def resolve_in_flight(self, row_id: int, status: str, note: str) -> LedgerEntry | None:
+        """Close out an interrupted migration once a human has decided what happened.
+
+        A crash between `begin` and `finish` leaves a row `in_flight`, and every
+        subsequent apply refuses while one exists — correctly, because pgops cannot know
+        whether the DDL committed. Until this existed the only way out was to UPDATE the
+        ledger by hand in psql, which brought the whole migration subsystem down to
+        "connect to the database yourself" after any crash. That is the situation an MCP
+        server is supposed to prevent, not create.
+
+        This does not inspect the schema and does not guess: the caller states the
+        outcome and it is recorded verbatim, with the note, under their identity.
+        """
+        row = await self._conn.fetchrow(
+            f"""
+            UPDATE {LEDGER_TABLE}
+            SET status = $2, finished_at = now(),
+                -- concat_ws is variadic "any", so the parameter needs an explicit type
+                -- or Postgres cannot infer one and rejects the prepare.
+                error = concat_ws(' | ', error, $3::text)
+            WHERE id = $1 AND status = 'in_flight'
+            RETURNING *
+            """,
+            row_id,
+            status,
+            note,
+        )
+        return _row_to_entry(row) if row else None
 
     async def mark_rolled_back(self, migration_id: str) -> None:
         await self._conn.execute(

@@ -40,6 +40,7 @@ from pgops.guardrails import ConfirmationTokenStore
 from pgops.migrations.diff import Change, ChangeSet, diff_schema
 from pgops.migrations.ledger import (
     MigrationLedger,
+    MigrationStatus,
     checksum_steps,
 )
 from pgops.migrations.lock_analysis import LockImpact, analyze_statement
@@ -224,8 +225,9 @@ async def migration_apply(
                 f"a previous migration ({stranded[0].migration_id}) is still marked "
                 "in_flight — it was interrupted and the database may be half-migrated",
                 hint=(
-                    "inspect pgops_migrations and the actual schema, then resolve the row "
-                    "manually before applying anything else"
+                    f"inspect the schema, then close the row with migration.resolve"
+                    f"(ledger_id={stranded[0].id}, outcome, note). Nothing else applies "
+                    f"until you do."
                 ),
             )
 
@@ -391,8 +393,10 @@ async def migration_history(conn_manager: ConnectionManager, limit: int = 20) ->
         "history": [e.to_dict() for e in entries],
         "in_flight": [e.to_dict() for e in in_flight],
         "warning": (
-            "a migration is marked in_flight — it was interrupted and the schema may be "
-            "half-migrated"
+            "a migration is marked in_flight — it was interrupted and the schema may "
+            "be half-migrated. Inspect the schema, then close the row with "
+            "migration.resolve(ledger_id, outcome, note); further migrations refuse "
+            "until you do."
             if in_flight
             else None
         ),
@@ -472,4 +476,111 @@ async def migration_describe(
         "interpreted_target": target,
         "description": description,
         **plan.to_dict(),
+    }
+
+
+async def migration_resolve(
+    conn_manager: ConnectionManager,
+    audit: AuditLog,
+    tokens: ConfirmationTokenStore,
+    ledger_id: int,
+    outcome: str,
+    note: str,
+    confirm_token: str | None = None,
+) -> dict[str, Any]:
+    """Close out an interrupted (in_flight) migration after a human has established what
+    actually happened to the schema.
+
+    A crash between recording intent and recording the result — the database going away
+    mid-DDL, the server being killed, the container restarting — leaves the ledger row
+    `in_flight`, and every later apply refuses while one exists. That refusal is correct:
+    pgops genuinely cannot tell whether the DDL committed, and guessing is the thing this
+    project exists not to do.
+
+    What was missing was the way out. The advice attached to the refusal was "resolve the
+    row manually", meaning: open psql and UPDATE the ledger by hand. So the first crash
+    reduced an MCP server whose purpose is letting an agent operate the database to
+    "connect to the database yourself" — permanently, until someone did. Verified by
+    SIGKILLing Postgres mid-index-build: the pool recovered, queries resumed, and every
+    subsequent migration.apply refused.
+
+    This tool does not inspect the schema and does not decide anything. The caller
+    inspects, decides, and states the outcome; pgops records it verbatim with the note
+    and the caller's identity, behind a confirmation token, in both the ledger and the
+    audit log. `applied` and `failed` are the only outcomes offered, because those are
+    the only two things that can have happened.
+    """
+    if outcome not in {"applied", "failed"}:
+        raise PgopsError(
+            ErrorCode.INVALID_ARGUMENT,
+            f"outcome must be 'applied' or 'failed', not {outcome!r}",
+            hint="'applied' if the schema shows the change landed, 'failed' if it did "
+            "not. Inspect with schema.inspect before deciding.",
+        )
+    if not note.strip():
+        raise PgopsError(
+            ErrorCode.INVALID_ARGUMENT,
+            "note is required",
+            hint="record what you checked and what you concluded — this is the only "
+            "explanation anyone reading the ledger later will have",
+        )
+
+    pool = await conn_manager.readwrite_pool()
+    async with pool.acquire() as conn:
+        ledger = MigrationLedger(conn)
+        await ledger.ensure_table()
+        entry = await ledger.get_by_id(ledger_id)
+        if entry is None:
+            raise PgopsError(
+                ErrorCode.INVALID_ARGUMENT,
+                f"no migration with ledger id {ledger_id}",
+                hint="run migration.history to see recorded migrations",
+            )
+        if entry.status is not MigrationStatus.IN_FLIGHT:
+            raise PgopsError(
+                ErrorCode.INVALID_ARGUMENT,
+                f"migration {entry.migration_id!r} has status {entry.status.value!r}; "
+                "only an interrupted (in_flight) migration needs resolving",
+            )
+
+        subject = f"migration.resolve:{entry.migration_id}:{outcome}"
+        reason = (
+            f"recording interrupted migration {entry.name!r} as {outcome!r}. This is a "
+            f"statement about what the schema already contains — it changes the ledger, "
+            f"not the database, and it unblocks further migrations."
+        )
+        if confirm_token is None:
+            token = tokens.issue(subject, reason)
+            audit.record(
+                AuditEntry(
+                    tool="migration.resolve",
+                    sql=f"resolve:{entry.migration_id}:{outcome}",
+                    verdict="refused_pending_confirmation",
+                    classification="migration",
+                    detail=reason,
+                )
+            )
+            raise PgopsError(
+                ErrorCode.CONFIRMATION_REQUIRED,
+                reason,
+                hint=f"call migration.resolve again with confirm_token={token!r}",
+            )
+        tokens.redeem(confirm_token, subject)
+
+        resolved = await ledger.resolve_in_flight(ledger_id, outcome, note.strip())
+        audit.record(
+            AuditEntry(
+                tool="migration.resolve",
+                sql=f"resolve:{entry.migration_id}:{outcome}",
+                verdict="executed",
+                classification="migration",
+                detail=note.strip(),
+            )
+        )
+    return {
+        "resolved": resolved is not None,
+        "ledger_id": ledger_id,
+        "migration_id": entry.migration_id,
+        "status": outcome,
+        "note": note.strip(),
     }

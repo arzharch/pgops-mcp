@@ -66,6 +66,7 @@ from pgops.tools.migrations import (
     migration_describe,
     migration_history,
     migration_plan,
+    migration_resolve,
 )
 from pgops.tools.query import query_read
 from pgops.tools.schema import Level, schema_inspect
@@ -293,7 +294,8 @@ def build_server(config: PgopsConfig, conn_manager: ConnectionManager, auth: Any
     @tool_boundary
     async def migration_history_tool(limit: int = 20) -> dict[str, Any]:
         """Applied-migration history from the ledger, including any interrupted
-        (in_flight) migration that needs manual resolution."""
+        (in_flight) migration. Each entry carries the `ledger_id` that
+        migration.rollback and migration.resolve take."""
         return await migration_history(conn_manager, limit=limit)
 
     if not config.read_only:
@@ -312,6 +314,32 @@ def build_server(config: PgopsConfig, conn_manager: ConnectionManager, auth: Any
             """
             return await rollback_migration(
                 conn_manager, audit, tokens, ledger_id, confirm_token=confirm_token
+            )
+
+        @mcp.tool(name="migration.resolve")
+        @tool_boundary
+        async def migration_resolve_tool(
+            ledger_id: int, outcome: str, note: str, confirm_token: str | None = None
+        ) -> dict[str, Any]:
+            """Close out an interrupted (in_flight) migration, unblocking further ones.
+
+            A migration interrupted mid-flight (the database went away, the server was
+            killed) leaves a ledger row pgops cannot interpret: it does not know whether
+            the DDL committed. Every later apply refuses until the row is closed.
+
+            Inspect the schema yourself, decide, and state the outcome — `applied` if
+            the change is present, `failed` if it is not. This records your conclusion;
+            it does not change the database and it does not check your answer. `note` is
+            required and is the only explanation the ledger will carry.
+            """
+            return await migration_resolve(
+                conn_manager,
+                audit,
+                tokens,
+                ledger_id,
+                outcome,
+                note,
+                confirm_token=confirm_token,
             )
 
     @mcp.tool(name="env.topology")
