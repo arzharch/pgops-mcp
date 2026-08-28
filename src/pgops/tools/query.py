@@ -1,4 +1,4 @@
-"""query.read — the only way an agent touches data before Phase 2 lands query.write.
+"""query.read — the read half of the data surface; query.write is the other.
 
 Row-limit enforcement deliberately does NOT rewrite the SQL text (e.g. wrapping it in
 `SELECT * FROM (...) sub LIMIT n`). That approach breaks on EXPLAIN, statements with a
@@ -53,7 +53,7 @@ async def query_read(
             ErrorCode.CLASSIFICATION_REFUSED,
             f"statement classified as {classification.effective_gate_class.value} "
             f"({classification.reason}); query.read only accepts pure reads",
-            hint="use query.write once Phase 2 lands, or rewrite as a SELECT/WITH/EXPLAIN",
+            hint="use query.write for mutations, or rewrite this as a SELECT/WITH/EXPLAIN",
         )
 
     resolved_limit = config.row_limits.resolve(limit)

@@ -36,11 +36,23 @@ SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_stat_statements')
 """
 
 # How long the counters this tool reasons about have actually been accumulating.
-# NULL stats_reset means they were never explicitly reset, so the window starts at the
-# last stats-file initialization — effectively "unknown, possibly very recent".
+#
+# `stats_reset` is NULL on any database whose statistics have never been explicitly
+# reset — which is the normal state of a freshly provisioned Postgres, not an edge case.
+# The value used to flow straight into the finding text, so the first run against a new
+# database read "zero scans recorded over unknown of statistics" and "collected for
+# unknown, which is too short to conclude it is unused". Three times, in the tool whose
+# whole point is being honest about how much confidence the data supports.
+#
+# The counters have in fact been accumulating since the server started, so that is the
+# defensible floor for the window. It is a floor and not a measurement — stats survive a
+# clean restart and are lost on a crash — so `stats_window` reports which of the two it
+# used and the caller can weigh it.
 _STATS_AGE_SQL = """
 SELECT stats_reset,
-       EXTRACT(EPOCH FROM (now() - stats_reset)) AS seconds
+       pg_postmaster_start_time() AS postmaster_start,
+       EXTRACT(EPOCH FROM (now() - COALESCE(stats_reset, pg_postmaster_start_time())))
+           AS seconds
 FROM pg_stat_database
 WHERE datname = current_database()
 """
@@ -198,6 +210,11 @@ async def index_advise(conn_manager: ConnectionManager, limit: int = 10) -> Inde
             if stats_row and stats_row["stats_reset"]
             else None,
             "observed_for": _format_duration(window_s) if window_s else "unknown",
+            "window_measured_from": (
+                "stats_reset"
+                if stats_row and stats_row["stats_reset"]
+                else "server start (statistics have never been explicitly reset)"
+            ),
             "sufficient_for_unused_index_advice": window_trustworthy,
         }
 
