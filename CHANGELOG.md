@@ -9,12 +9,10 @@ scopes — not Python symbols.
 
 ## [Unreleased]
 
-## [0.1.5] — 2026-08-28
+## [0.1.6] — 2026-08-28
 
-Findings from stress- and fuzz-testing the published 0.1.4 against a realistic 2M-row
-database: concurrency and rate-limit stress, malformed and pathological inputs, and
-database failure injection. The performance, limits and security all held; three inputs
-reached an opaque `INTERNAL_ERROR` where a clean, actionable error was owed.
+A data-safety fix found by probing concurrency directly: what happens when the database is
+changed out of band between `migration.plan` and `migration.apply`.
 
 ### Fixed
 - **`migration.apply` executed a stale plan without re-checking the live schema.** The
@@ -28,6 +26,21 @@ reached an opaque `INTERNAL_ERROR` where a clean, actionable error was owed.
   (a column you were adding now exists, a type changed). Structural drift only — a column
   dropped and re-created with an identical definition but different data is invisible to a
   schema diff, and is documented as a known limit in SECURITY.md.
+- **Concurrent migrations serialize.** Two agents applying different changes to one table:
+  one lands, the other is refused with `MIGRATION_IN_FLIGHT` (the ledger guard), and
+  Postgres's own `AccessExclusiveLock` backstops at the DDL level regardless. Concurrent
+  writes to the same rows are handled by Postgres MVCC and both are audited — verified, no
+  change needed.
+
+
+## [0.1.5] — 2026-08-28
+
+Findings from stress- and fuzz-testing the published 0.1.4 against a realistic 2M-row
+database: concurrency and rate-limit stress, malformed and pathological inputs, and
+database failure injection. The performance, limits and security all held; three inputs
+reached an opaque `INTERNAL_ERROR` where a clean, actionable error was owed.
+
+### Fixed
 - **A lost database connection surfaced as `INTERNAL_ERROR` on every tool.** SIGKILLing
   the database mid read-storm returned "internal error; see server logs" for calls in
   flight — the least useful message during an outage, and invisible over stdio where the
