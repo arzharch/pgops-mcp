@@ -68,6 +68,8 @@ operating databases today are doing it blind, and without guardrails.
 engine → performance diagnosis → environment awareness**, with a safety architecture that
 makes every action classifiable, confirmable, and auditable.
 
+**Native AI/ML Extension Support:** Because `pgops` builds on core Postgres catalogs rather than brittle regex parsing, it inherits native support for custom types and extensions like `pgvector`. Tools like `migration.plan` and `query.explain` understand vector types (`vector(384)`) and `hnsw` indexes out of the box, with zero configuration.
+
 **New here?** [docs/GETTING_STARTED.md](https://github.com/arzharch/pgops-mcp/blob/main/docs/GETTING_STARTED.md) is a 15-minute guided
 tour that assumes no MCP knowledge.
 

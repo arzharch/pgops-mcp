@@ -45,7 +45,7 @@ pytestmark = pytest.mark.skipif(not _docker_available(), reason="Docker daemon u
 
 # The dev compose stack, brought up by `docker compose up -d`.
 DEV_CONTAINER = "pgops_dev_postgres"
-DEV_DSN = "postgresql://pgops:pgops_dev@localhost:5435/pgops_demo"
+DEV_DSN = "postgresql://pgops:pgops_dev@localhost:5436/pgops_demo"
 DEV_PASSWORD = "pgops_dev"
 
 
@@ -78,16 +78,16 @@ async def test_topology_lists_containers() -> None:
 
 @needs_dev_stack
 async def test_topology_identifies_our_database_by_port() -> None:
-    """This machine runs several postgres containers at once — ours on host port 5435,
+    """This machine runs several postgres containers at once — ours on host port 5436,
     other projects' on 5433/5434. Matching on "the image is postgres" would
     confidently pick the wrong one and then report another project's logs as our
     database's, so the match is on the published host port from the DSN."""
     topology = await env_topology(_config())
-    assert topology["dsn_host_port"] == 5435
+    assert topology["dsn_host_port"] == 5436
     db = topology["database_container"]
     assert db is not None
     assert db["name"] == DEV_CONTAINER
-    assert any(p["host_port"] == 5435 for p in db["ports"])
+    assert any(p["host_port"] == 5436 for p in db["ports"])
 
 
 @needs_dev_stack

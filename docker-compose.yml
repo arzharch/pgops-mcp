@@ -8,7 +8,7 @@
 
 services:
   postgres:
-    image: postgres:16
+    image: pgvector/pgvector:pg16
     container_name: pgops_dev_postgres
     environment:
       POSTGRES_USER: pgops
@@ -21,7 +21,7 @@ services:
       - -c
       - pg_stat_statements.track=all
     ports:
-      - "5435:5432"
+      - "5436:5432"
     volumes:
       - ./dev/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:

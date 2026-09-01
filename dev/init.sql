@@ -4,6 +4,7 @@
 -- scenarios in later phases have real numbers to reason about, not toy tables.
 
 CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
+CREATE EXTENSION IF NOT EXISTS vector;
 
 CREATE TABLE customers (
     id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -64,3 +65,40 @@ FROM generate_series(1, 1200000) AS i;
 ANALYZE customers;
 ANALYZE products;
 ANALYZE orders;
+
+-- Vector Schemas
+
+CREATE TABLE document_embeddings (
+    id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    content text NOT NULL,
+    embedding vector(384) -- Common dimension for all-MiniLM-L6-v2
+);
+
+CREATE TABLE product_embeddings (
+    product_id bigint PRIMARY KEY REFERENCES products(id),
+    embedding vector(128) -- Smaller dimension for testing different index types
+);
+
+-- Seed document embeddings (10k rows) with random vectors
+INSERT INTO document_embeddings (content, embedding)
+SELECT 
+    'Document content ' || i,
+    (SELECT array_agg(random()) FROM generate_series(1, 384))::vector
+FROM generate_series(1, 10000) AS i;
+
+-- Seed product embeddings (all 500 products) with random vectors
+INSERT INTO product_embeddings (product_id, embedding)
+SELECT 
+    id,
+    (SELECT array_agg(random()) FROM generate_series(1, 128))::vector
+FROM products;
+
+-- Create an HNSW index on document_embeddings using cosine distance (Standard everyday vector index)
+CREATE INDEX idx_docs_embedding_hnsw ON document_embeddings USING hnsw (embedding vector_cosine_ops);
+
+-- Create an IVFFlat index on product_embeddings (Older/rarer index type)
+-- IVFFlat needs data to build the clusters, so it's created after inserts
+CREATE INDEX idx_products_embedding_ivfflat ON product_embeddings USING ivfflat (embedding vector_l2_ops) WITH (lists = 10);
+
+ANALYZE document_embeddings;
+ANALYZE product_embeddings;

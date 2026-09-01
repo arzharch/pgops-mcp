@@ -28,6 +28,7 @@ model is about *which* actions are reachable, not about pretending none are:
   socket is root-equivalent on the host.
 - **Every executed statement and every refusal is recorded** in an append-only audit log
   with the calling identity.
+- **Extensions natively inherit guardrails.** Because pgops evaluates structure against the core database engine, executing an unbounded `DELETE` against an extension's table (like a `pgvector` embeddings table) gets intercepted with the exact same strictness as any native Postgres operation.
 
 ## Deployment notes that are security-relevant
 

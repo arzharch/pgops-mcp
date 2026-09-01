@@ -1,6 +1,6 @@
 """Pre-release checklist for pgops-mcp — verifies each gate rather than trusting a glance.
 
-Run before creating a release tag:  python scripts/release_checklist.py 0.1.7
+Run before creating a release tag:  python scripts/release_checklist.py 0.1.8
 
 Every item is a hard gate. It prints PASS/FAIL per item and exits non-zero if any fails,
 so it can also run in CI. It does NOT push or tag — that stays a human action.
@@ -116,4 +116,4 @@ def main(target: str) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1] if len(sys.argv) > 1 else "0.1.7"))
+    sys.exit(main(sys.argv[1] if len(sys.argv) > 1 else "0.1.8"))

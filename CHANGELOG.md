@@ -9,6 +9,12 @@ scopes — not Python symbols.
 
 ## [Unreleased]
 
+## [0.1.8] — 2026-09-01
+
+### Added
+- **Formal support for AI/ML extensions like `pgvector`.** Integration testing confirms that because pgops builds on standard PostgreSQL catalog introspection, it inherently understands custom types (e.g., `vector(768)`) and custom indexes (e.g., HNSW using `vector_cosine_ops`).
+- `migration.plan` natively assesses and reports metadata lock impacts for extension types without requiring specialized parsers or plugins.
+
 ## [0.1.7] — 2026-08-29
 
 A QA sign-off pass — fuzzing every tool and checking the scope matrix — before attesting
