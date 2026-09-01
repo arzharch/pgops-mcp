@@ -1,6 +1,6 @@
 [project]
 name = "pgops-mcp"
-version = "0.1.8"
+version = "0.1.9"
 description = "Production-grade MCP server: safe, audited PostgreSQL operations + Docker environment awareness for AI agents."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -28,7 +28,7 @@ classifiers = [
     "Topic :: System :: Systems Administration",
 ]
 dependencies = [
-    "fastmcp>=2.3",
+    "fastmcp>=2.3,<4.0",
     "asyncpg>=0.29",
     "sqlparse>=0.5",
     # Required, not optional: six of the seventeen tools (env.*, container.*) import it,

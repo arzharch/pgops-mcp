@@ -9,6 +9,11 @@ scopes — not Python symbols.
 
 ## [Unreleased]
 
+## [0.1.9] — 2026-09-01
+
+### Fixed
+- **Critical PyPI Hotfix**: Pinned `fastmcp<4.0` in `pyproject.toml` to prevent the server from crashing on startup when installed globally via `uvx`. Upstream `fastmcp 4.0.0` introduced breaking changes to the internal API used for command completions.
+
 ## [0.1.8] — 2026-09-01
 
 ### Added
